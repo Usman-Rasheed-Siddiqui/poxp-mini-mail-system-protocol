@@ -3,7 +3,10 @@ server_node.py
 Continuous Multi-Threaded Raw TCP Socket Server for POXP.
 Features:
 - Windows system hosts file resolution (C:\\Windows\\System32\\drivers\\etc\\hosts)
-- Priority-based dispatch queue (important > moderate > low, FIFO tie-breaking)
+- Priority-ordered mailbox delivery (important > moderate > low, FIFO
+  tie-breaking) applied at fetch time in storage_manager.py — no dispatch
+  queue or worker-thread pool; each accepted connection is handled on its
+  own thread as before.
 - 10-second offline recipient/relay retry window with descriptive status codes
 - Server queue auto-purge upon client fetch
 - Full command prompt packet inspection and logging
@@ -11,7 +14,6 @@ Features:
 """
 import socket
 import threading
-import queue
 import time
 import uuid
 import sys
@@ -25,14 +27,8 @@ from poxp_protocol import (
 )
 from storage_manager import StorageManager
 
-PRIORITY_MAP = {
-    "important": 1,
-    "moderate": 2,
-    "low": 3
-}
-
 class ServerNode:
-    def __init__(self, server_id, host="0.0.0.0", port=5025, max_workers=4):
+    def __init__(self, server_id, host="0.0.0.0", port=5025):
         self.server_id = server_id
         self.host = host
         self.port = port
@@ -41,18 +37,6 @@ class ServerNode:
         self.dns_table = {}
         self.is_running = True
         self.listen_socket = None
-
-        # Priority queue for handling outgoing relays / deliveries: (priority_int, seq_counter, task_fn, args)
-        self.task_queue = queue.PriorityQueue()
-        self.task_counter = 0
-        self.counter_lock = threading.Lock()
-
-        # Start background priority worker threads
-        self.workers = []
-        for i in range(max_workers):
-            w = threading.Thread(target=self._worker_loop, daemon=True, name=f"Worker-{i}")
-            w.start()
-            self.workers.append(w)
 
         # Load system hosts file
         self._load_hosts_file()
@@ -162,42 +146,27 @@ class ServerNode:
             except Exception:
                 pass
 
-    def _worker_loop(self):
-        """Processes enqueued priority deliveries."""
-        while self.is_running:
-            try:
-                _, _, task_fn, args = self.task_queue.get(timeout=1.0)
-                try:
-                    task_fn(*args)
-                except Exception as e:
-                    print(f"[{self.server_id}] [WORKER ERROR] {e}")
-                finally:
-                    self.task_queue.task_done()
-            except queue.Empty:
-                continue
-
-    def enqueue_priority_task(self, priority_str, task_fn, *args):
-        p_val = PRIORITY_MAP.get(priority_str.lower(), 2)
-        with self.counter_lock:
-            self.task_counter += 1
-            seq = self.task_counter
-        self.task_queue.put((p_val, seq, task_fn, args))
-        print(f"[{self.server_id}] [PRIORITY QUEUE] Enqueued email (Priority: {priority_str} [Weight: {p_val}] | Seq: #{seq})")
-
     def handle_connection(self, conn, addr):
         with conn:
             conn.settimeout(12.0)
             try:
+                # Read until the peer half-closes its write side (recv() returns
+                # b""). The client always calls shutdown(SHUT_WR) right after
+                # sendall(), so this is a reliable end-of-message signal for
+                # messages of any size, including multi-megabyte base64
+                # attachments spread across many 4096-byte chunks.
+                #
+                # (Previously this loop broke out as soon as it saw the
+                # header/body "\n\n" separator in whatever had arrived so far,
+                # which truncated any message whose body didn't fit in the
+                # first chunk or two — this is what corrupted attachment
+                # transfers. Do not reintroduce an early-break heuristic here.)
                 raw_bytes = bytearray()
                 while True:
                     chunk = conn.recv(4096)
                     if not chunk:
                         break
                     raw_bytes.extend(chunk)
-                    if b"\n\n" in raw_bytes and not raw_bytes.endswith(b"\n\n"):
-                        break
-                    if b"\n\n" in raw_bytes and b"Length:" not in raw_bytes:
-                        break
 
                 raw_text = raw_bytes.decode("utf-8", errors="replace")
                 parsed = parse_poxp_message(raw_text)

@@ -7,6 +7,8 @@ import os
 import json
 import threading
 
+from poxp_protocol import PRIORITY_WEIGHT
+
 class StorageManager:
     def __init__(self, storage_file="mailbox_store.json"):
         self.storage_file = storage_file
@@ -39,10 +41,23 @@ class StorageManager:
             self._write_data(data)
 
     def fetch_inbox(self, recipient_email, clear_fetched=True):
-        """Retrieves and automatically purges retrieved messages from server store."""
+        """Retrieves and automatically purges retrieved messages from server store.
+
+        Messages are returned ordered by Priority header (important > moderate >
+        low), with original arrival order preserved among messages of equal
+        priority (Python's sort is stable, so this gives FIFO tie-breaking).
+        This is the entire "priority" mechanism: no queue, no worker threads —
+        just an ordering step applied at read time.
+        """
         with self.lock:
             data = self._read_data()
             emails = data["inboxes"].get(recipient_email, [])
+            emails = sorted(
+                emails,
+                key=lambda e: PRIORITY_WEIGHT.get(
+                    e.get("headers", {}).get("Priority", "moderate"), 2
+                ),
+            )
             if clear_fetched and emails:
                 data["inboxes"][recipient_email] = []
                 self._write_data(data)

@@ -3,7 +3,7 @@ poxp_protocol.py
 Post Office Xchange Protocol (POXP) Serializer and Parser.
 Handles message framing, headers, timestamps, status codes, and 10MB attachments.
 """
-import uuid
+
 import base64
 from datetime import datetime, timezone, timedelta
 
@@ -16,6 +16,10 @@ STATUS_CLIENT_UNAVAILABLE = (480, "CLIENT_UNAVAILABLE")
 STATUS_SERVER_ERROR = (500, "SERVER_ERROR")
 STATUS_RELAY_ERROR = (502, "RELAY_ERROR")
 STATUS_SERVER_UNAVAILABLE = (503, "SERVER_UNAVAILABLE")
+
+# Priority header -> sort weight (lower = delivered first). Used only to order
+# messages when a mailbox is fetched; it is metadata, not a scheduling queue.
+PRIORITY_WEIGHT = {"important": 1, "moderate": 2, "low": 3}
 
 ATTACHMENT_START_TAG = "---POXP_ATTACHMENT_BEGIN---"
 ATTACHMENT_END_TAG = "---POXP_ATTACHMENT_END---"
@@ -52,9 +56,12 @@ def build_poxp_message(method, headers, body="", attachment_filename=None, attac
 def build_ack(code, short_name, identifier, error_at="None", body=""):
     """
     Serializes a POXP acknowledgement message.
+    Status line now carries the protocol/version token too (e.g. "200 OK POXP/1.0"),
+    matching the request-side lines ("SUBMIT POXP/1.0", etc.) so every POXP message --
+    request or acknowledgement -- is self-identifying on the wire.
     """
     lines = [
-        f"{code} {short_name}",
+        f"{code} {short_name} POXP/1.0",
         f"Identifier: {identifier}",
         f"Time of Acknowledgement: {get_iso_timestamp()}",
         f"Error at: {error_at}",

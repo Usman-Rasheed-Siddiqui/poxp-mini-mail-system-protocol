@@ -2,12 +2,16 @@
 gui_app.py
 Embedded FastAPI web interface running in the same Python process as ClientNode.
 Features:
-- Modern responsive layout with sidebar navigation (Inbox, Compose, Console, Exit)
+- Plain, flat layout with sidebar navigation (Inbox, Compose, Console, Exit)
 - Expandable email viewer with attachment downloads (PDFs, images, docs up to 10MB)
 - Safe template rendering using token replacements (immune to CSS/JS curly brace KeyError)
 - Live activity console streaming socket events, TCP packets, and ACKs
 - 10-second offline timeout alert with interactive Retry and Cancel prompts
 - Client-side storage deletion and unread badge tracking
+
+Pure HTML/CSS (system fonts, flat colors, no blur/gradients/animation) plus the
+original small vanilla-JS toggle for expanding an email -- no frameworks, no
+build step, nothing beyond what FastAPI already serves.
 """
 import uvicorn
 import os
@@ -26,280 +30,292 @@ HTML_TEMPLATE_RAW = """<!DOCTYPE html>
     <title>POXP Mail - __CLIENT_EMAIL__</title>
     <style>
         :root {
-            --primary: #2563eb;
-            --primary-hover: #1d4ed8;
-            --bg-main: #f8fafc;
+            --bg: #f6f7f9;
             --surface: #ffffff;
-            --sidebar-bg: #0f172a;
-            --sidebar-text: #94a3b8;
-            --sidebar-active: #ffffff;
-            --border: #e2e8f0;
-            --text-dark: #0f172a;
-            --text-muted: #64748b;
+            --sidebar: #1a1d23;
+            --sidebar-text: #9aa1ad;
+            --sidebar-text-active: #ffffff;
+            --border: #e3e5e9;
+            --ink: #16181d;
+            --muted: #6b7280;
+            --accent: #2f6feb;
+            --accent-ink: #ffffff;
+            --danger: #d64545;
+            --danger-bg: #fdecec;
+            --success-bg: #e8f5ea;
+            --success-ink: #1f7a37;
+            --warn-bg: #fff6e0;
+            --warn-ink: #8a6200;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: var(--bg-main);
-            color: var(--text-dark);
-            height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--ink);
             display: flex;
             overflow: hidden;
         }
-        /* Sidebar */
+
+        /* ---------- Sidebar ---------- */
         .sidebar {
-            width: 260px;
-            background: var(--sidebar-bg);
+            width: 220px;
+            background: var(--sidebar);
             color: var(--sidebar-text);
             display: flex;
             flex-direction: column;
             justify-content: space-between;
-            padding: 24px 16px;
+            padding: 20px 14px;
             flex-shrink: 0;
         }
         .sidebar-brand {
-            font-size: 18px;
-            font-weight: 700;
+            font-size: 15px;
+            font-weight: 600;
             color: #ffffff;
-            margin-bottom: 28px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            margin-bottom: 22px;
+            padding: 0 6px;
         }
         .nav-item {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 12px 16px;
-            border-radius: 8px;
+            padding: 9px 12px;
+            border-radius: 6px;
             color: var(--sidebar-text);
             text-decoration: none;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 500;
-            margin-bottom: 6px;
+            margin-bottom: 2px;
             cursor: pointer;
-            transition: all 0.15s ease;
         }
-        .nav-item:hover, .nav-item.active {
-            background: #1e293b;
-            color: var(--sidebar-active);
-        }
+        .nav-item:hover { background: rgba(255,255,255,.06); color: var(--sidebar-text-active); }
+        .nav-item.active { background: rgba(255,255,255,.1); color: var(--sidebar-text-active); }
         .badge {
-            background: var(--primary);
-            color: white;
+            background: var(--accent);
+            color: #ffffff;
             font-size: 11px;
-            font-weight: 700;
-            padding: 2px 8px;
-            border-radius: 12px;
+            font-weight: 600;
+            padding: 1px 7px;
+            border-radius: 9px;
         }
         .sidebar-footer {
-            border-top: 1px solid #1e293b;
-            padding-top: 16px;
+            border-top: 1px solid rgba(255,255,255,.1);
+            padding-top: 12px;
         }
         .exit-btn {
             width: 100%;
-            background: #ef4444;
-            color: white;
-            border: none;
-            padding: 10px;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,.18);
+            color: var(--sidebar-text);
+            padding: 8px;
             border-radius: 6px;
-            font-size: 13px;
-            font-weight: 600;
+            font-size: 12px;
+            font-weight: 500;
             cursor: pointer;
             text-align: center;
             text-decoration: none;
             display: block;
         }
-        .exit-btn:hover { background: #dc2626; }
+        .exit-btn:hover { background: rgba(255,255,255,.08); color: #fff; }
 
-        /* Main Content */
+        /* ---------- Main ---------- */
         .main {
             flex: 1;
             display: flex;
             flex-direction: column;
             overflow-y: auto;
+            min-width: 0;
         }
         .topbar {
             background: var(--surface);
             border-bottom: 1px solid var(--border);
-            padding: 16px 32px;
+            padding: 14px 28px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
+        .topbar strong { font-weight: 600; }
         .node-chip {
-            background: #f1f5f9;
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-size: 13px;
-            color: var(--text-muted);
+            background: var(--bg);
+            border: 1px solid var(--border);
+            padding: 5px 11px;
+            border-radius: 5px;
+            font-size: 12px;
+            color: var(--muted);
         }
+        .node-chip strong { color: var(--ink); }
         .content-area {
-            padding: 28px 32px;
+            padding: 24px 28px;
             max-width: 1100px;
             margin: 0 auto;
             width: 100%;
         }
 
-        /* Banner & Prompts */
+        /* ---------- Banners ---------- */
         .banner {
-            padding: 14px 18px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-size: 14px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            border: 1px solid var(--border);
         }
-        .banner-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
-        .banner-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+        .banner-success { background: var(--success-bg); color: var(--success-ink); border-color: #c7e7cd; }
+        .banner-error { background: var(--danger-bg); color: #9b2c2c; border-color: #f6cbcb; }
         .retry-prompt {
-            background: #fffbeb;
-            border: 1px solid #fde68a;
-            color: #92400e;
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
+            background: var(--warn-bg);
+            border: 1px solid #f3dca0;
+            color: var(--warn-ink);
+            padding: 14px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
         .btn-retry {
-            background: #d97706;
+            background: #b8860b;
             color: white;
             border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
+            padding: 7px 14px;
+            border-radius: 5px;
             font-weight: 600;
-            font-size: 13px;
+            font-size: 12px;
             cursor: pointer;
             margin-right: 8px;
         }
         .btn-cancel {
-            background: #64748b;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--ink);
+            padding: 7px 14px;
+            border-radius: 5px;
             font-weight: 600;
-            font-size: 13px;
+            font-size: 12px;
             cursor: pointer;
         }
 
-        /* Two Column View */
+        /* ---------- Cards ---------- */
         .grid-layout {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 24px;
+            gap: 20px;
         }
         .card {
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 24px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            border-radius: 8px;
+            padding: 20px;
         }
-        h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; color: var(--text-dark); }
-        label { display: block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-top: 14px; margin-bottom: 4px; }
+        h2 { font-size: 14.5px; font-weight: 600; margin-bottom: 14px; color: var(--ink); }
+        label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-top: 12px; margin-bottom: 4px; }
         input, select, textarea {
             width: 100%;
-            padding: 10px 12px;
+            padding: 8px 10px;
             border: 1px solid var(--border);
-            border-radius: 6px;
-            font-size: 14px;
-            background: #f8fafc;
+            border-radius: 5px;
+            font-size: 13px;
+            background: var(--surface);
+            color: var(--ink);
+            font-family: inherit;
         }
         input:focus, select:focus, textarea:focus {
             outline: none;
-            border-color: var(--primary);
-            background: white;
+            border-color: var(--accent);
         }
         .submit-btn {
-            background: var(--primary);
-            color: white;
+            background: var(--accent);
+            color: var(--accent-ink);
             border: none;
-            padding: 12px 20px;
+            padding: 10px 18px;
             border-radius: 6px;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             cursor: pointer;
-            margin-top: 18px;
+            margin-top: 16px;
             width: 100%;
         }
-        .submit-btn:hover { background: var(--primary-hover); }
+        .submit-btn:hover { background: #2559c4; }
 
-        /* Inbox List & Expandable */
+        /* ---------- Inbox list ---------- */
         .email-item {
             border: 1px solid var(--border);
-            border-radius: 8px;
-            margin-bottom: 12px;
-            background: white;
-            transition: all 0.15s;
-            overflow: hidden;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            background: var(--surface);
         }
+        .email-item:hover { border-color: #c9ccd2; }
         .email-header {
-            padding: 14px;
+            padding: 11px 12px;
             cursor: pointer;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: #f8fafc;
         }
-        .email-header:hover { background: #f1f5f9; }
         .unread-indicator {
-            width: 8px;
-            height: 8px;
-            background: var(--primary);
+            width: 6px;
+            height: 6px;
+            background: var(--accent);
             border-radius: 50%;
             display: inline-block;
-            margin-right: 8px;
+            margin-right: 7px;
         }
         .email-body {
-            padding: 16px;
+            padding: 0 14px 14px 14px;
             border-top: 1px solid var(--border);
-            font-size: 14px;
-            line-height: 1.5;
-            color: #334155;
+            margin-top: 2px;
+            font-size: 13px;
+            line-height: 1.55;
+            color: var(--muted);
             display: none;
         }
-        .email-body.open { display: block; }
+        .email-body.open { display: block; padding-top: 12px; }
         .attachment-chip {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            background: #e0e7ff;
-            color: #3730a3;
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-size: 13px;
+            gap: 5px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--accent);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
             font-weight: 500;
             text-decoration: none;
-            margin-top: 12px;
+            margin-top: 10px;
         }
-        .attachment-chip:hover { background: #c7d2fe; }
+        .attachment-chip:hover { border-color: var(--accent); }
         .delete-btn {
             background: transparent;
-            color: #ef4444;
-            border: 1px solid #fecaca;
+            color: var(--danger);
+            border: 1px solid #efc6c6;
             padding: 4px 10px;
-            border-radius: 4px;
-            font-size: 12px;
+            border-radius: 5px;
+            font-size: 11px;
             cursor: pointer;
             float: right;
-            margin-top: 12px;
+            margin-top: 10px;
         }
-        .delete-btn:hover { background: #fee2e2; }
+        .delete-btn:hover { background: var(--danger-bg); }
 
-        /* Console Section */
+        /* ---------- Console ---------- */
         .console-box {
-            background: #0f172a;
-            color: #38bdf8;
-            font-family: monospace;
-            font-size: 12px;
-            padding: 16px;
-            border-radius: 8px;
-            height: 220px;
+            background: #15171b;
+            color: #9ad1ff;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11.5px;
+            padding: 14px;
+            border-radius: 6px;
+            height: 210px;
             overflow-y: auto;
             white-space: pre-wrap;
-            line-height: 1.4;
-            margin-top: 24px;
+            line-height: 1.5;
+            margin-top: 16px;
+        }
+
+        @media (max-width: 900px) {
+            body { overflow: auto; flex-direction: column; }
+            .sidebar { flex-direction: row; width: auto; overflow-x: auto; }
+            .grid-layout { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -308,23 +324,21 @@ HTML_TEMPLATE_RAW = """<!DOCTYPE html>
     <!-- Sidebar Navigation -->
     <div class="sidebar">
         <div>
-            <div class="sidebar-brand">
-                <span>📬</span> POXP Mail Node
-            </div>
+            <div class="sidebar-brand">POXP Mail</div>
             <a class="nav-item active" href="/">
-                <span>📥 Inbox</span>
+                <span>Inbox</span>
                 <span class="badge">__UNREAD_COUNT__</span>
             </a>
             <a class="nav-item" href="#compose-box">
-                <span>✍️ Compose</span>
+                <span>Compose</span>
             </a>
             <a class="nav-item" href="#console-box">
-                <span>🖥️ Socket Console</span>
+                <span>Socket Console</span>
             </a>
         </div>
         <div class="sidebar-footer">
             <form action="/shutdown" method="post">
-                <button type="submit" class="exit-btn">🚪 Exit Client GUI</button>
+                <button type="submit" class="exit-btn">Exit Client GUI</button>
             </form>
         </div>
     </div>
@@ -336,7 +350,7 @@ HTML_TEMPLATE_RAW = """<!DOCTYPE html>
                 <strong>__CLIENT_EMAIL__</strong>
             </div>
             <div class="node-chip">
-                Relay Server: <strong>__SERVER_IP__:__SERVER_PORT__</strong> | Auto-Poll: <strong>5s</strong>
+                Relay Server: <strong>__SERVER_IP__:__SERVER_PORT__</strong> &nbsp;&middot;&nbsp; Auto-Poll: <strong>5s</strong>
             </div>
         </div>
 
@@ -374,9 +388,9 @@ HTML_TEMPLATE_RAW = """<!DOCTYPE html>
 
                 <!-- Inbox Card -->
                 <div class="card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
                         <h2>Client Inbox</h2>
-                        <a href="/refresh" style="font-size:12px; color:var(--primary); text-decoration:none; font-weight:600;">🔄 Refresh Now</a>
+                        <a href="/refresh" style="font-size:12px; color:var(--accent); text-decoration:none; font-weight:600;">Refresh Now</a>
                     </div>
                     <div style="max-height: 440px; overflow-y: auto;">
                         __INBOX_HTML__
@@ -385,8 +399,8 @@ HTML_TEMPLATE_RAW = """<!DOCTYPE html>
             </div>
 
             <!-- Socket Activity Console -->
-            <div class="card" id="console-box" style="margin-top:24px;">
-                <h2>Live Socket Activity Console (Raw TCP & Status Codes)</h2>
+            <div class="card" id="console-box" style="margin-top:20px;">
+                <h2>Live Socket Activity Console (Raw TCP &amp; Status Codes)</h2>
                 <div class="console-box">__CONSOLE_LOGS__</div>
             </div>
         </div>
@@ -416,7 +430,7 @@ def create_app(client_node: ClientNode):
 
         inbox_html = ""
         if not inbox_items:
-            inbox_html = "<p style='color:#94a3b8; font-style:italic; padding:12px;'>No emails in client storage. Background daemon auto-polls every 5s.</p>"
+            inbox_html = "<p style='color:#9aa1ad; font-style:italic; padding:10px;'>No emails in client storage. Background daemon auto-polls every 5s.</p>"
         else:
             for item in reversed(inbox_items):
                 headers = item.get("headers", {})
@@ -432,25 +446,25 @@ def create_app(client_node: ClientNode):
                 att_html = ""
                 if "Attachment-Name" in headers:
                     att_name = headers["Attachment-Name"]
-                    att_html = f"<br><a href='/download/{msg_id}' class='attachment-chip'>📎 Download {att_name}</a>"
+                    att_html = f"<br><a href='/download/{msg_id}' class='attachment-chip'>Download {att_name}</a>"
 
                 inbox_html += f"""
                 <div class="email-item">
                     <div class="email-header" onclick="toggleEmail('{msg_id}')">
                         <div>
                             {indicator}<strong>{sender}</strong>
-                            <div style="font-size:13px; color:#334155; margin-top:2px;">{subject}</div>
+                            <div style="font-size:12px; color:#6b7280; margin-top:2px;">{subject}</div>
                         </div>
                         <div style="text-align:right;">
-                            <span style="font-size:11px; background:#e2e8f0; padding:2px 6px; border-radius:4px;">{priority}</span>
-                            <div style="font-size:11px; color:#94a3b8; margin-top:4px;">{date[:16]}</div>
+                            <span style="font-size:10px; background:#f6f7f9; border:1px solid #e3e5e9; padding:2px 7px; border-radius:4px; color:#6b7280;">{priority}</span>
+                            <div style="font-size:10px; color:#9aa1ad; margin-top:4px;">{date[:16]}</div>
                         </div>
                     </div>
                     <div class="email-body" id="body-{msg_id}">
                         <div style="white-space: pre-wrap;">{body}</div>
                         {att_html}
                         <form action="/delete/{msg_id}" method="post">
-                            <button type="submit" class="delete-btn">🗑 Delete from Storage</button>
+                            <button type="submit" class="delete-btn">Delete from Storage</button>
                         </form>
                     </div>
                 </div>
@@ -468,15 +482,15 @@ def create_app(client_node: ClientNode):
             retry_banner = f"""
             <div class="retry-prompt">
                 <div>
-                    <strong>⚠️ Transmission Paused:</strong> Target {rec} was offline for >10s ({err}).
+                    <strong>Transmission Paused:</strong> Target {rec} was offline for &gt;10s ({err}).
                     <br><small>Would you like to retry sending now or cancel?</small>
                 </div>
                 <div>
                     <form action="/retry" method="post" style="display:inline;">
-                        <button type="submit" class="btn-retry">🔄 Retry Sending</button>
+                        <button type="submit" class="btn-retry">Retry Sending</button>
                     </form>
                     <form action="/cancel" method="post" style="display:inline;">
-                        <button type="submit" class="btn-cancel">✖ Cancel</button>
+                        <button type="submit" class="btn-cancel">Cancel</button>
                     </form>
                 </div>
             </div>

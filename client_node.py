@@ -37,6 +37,10 @@ class ClientNode:
 
         # Offline retry state
         self.pending_retry = None  # Stores dict of last failed message
+        # Guards retry_last_failed() so a double-click (or a slow request that
+        # the user retries before it returns) can never send two copies of
+        # the same retry at once -- only one retry attempt is ever in flight.
+        self.retry_busy = threading.Lock()
 
         # Start 5-second automatic fetch daemon
         self.fetch_thread = threading.Thread(target=self._auto_fetch_loop, daemon=True)
@@ -147,15 +151,29 @@ class ClientNode:
             return None
 
     def retry_last_failed(self):
-        """Retries sending the last failed email."""
+        """Retries sending the last failed email.
+
+        One-shot by design: if a retry is already in flight (e.g. the user
+        clicked Retry twice before the first click's request came back), this
+        call does nothing instead of dispatching a second copy. A fresh
+        failure after a completed retry still repopulates pending_retry
+        normally, so the user can retry again -- this only blocks *concurrent*
+        duplicate clicks, not legitimate repeated attempts.
+        """
         if not self.pending_retry:
             return None
-        data = self.pending_retry
-        self.log(f"[RETRYING] Re-dispatching email to {data['receiver']}...")
-        return self.send_email(
-            data["receiver"], data["subject"], data["body"],
-            data["priority"], data["att_name"], data["att_bytes"]
-        )
+        if not self.retry_busy.acquire(blocking=False):
+            self.log("[RETRY IGNORED] A retry is already in progress for this message; duplicate click ignored.")
+            return None
+        try:
+            data = self.pending_retry
+            self.log(f"[RETRYING] Re-dispatching email to {data['receiver']}...")
+            return self.send_email(
+                data["receiver"], data["subject"], data["body"],
+                data["priority"], data["att_name"], data["att_bytes"]
+            )
+        finally:
+            self.retry_busy.release()
 
     def cancel_last_failed(self):
         """Cancels the pending retry."""
