@@ -234,10 +234,14 @@ function poxp_proto.dissector(buffer, pinfo, tree)
     hdr_subtree:add(f_header_count, #parsed.header_order)
     for _, key in ipairs(parsed.header_order) do
         local val = parsed.headers[key]
-        hdr_subtree:add(f_header_line, key .. ": " .. val)
         local field = NAMED_HEADER_FIELDS[key]
         if field then
+            -- Known header: show it once, as its clean named field only.
             hdr_subtree:add(field, val)
+        else
+            -- Unrecognized header: fall back to the generic "Key: Value" line
+            -- so nothing is silently dropped from the tree.
+            hdr_subtree:add(f_header_line, key .. ": " .. val)
         end
     end
     hdr_subtree:add(f_header_length, header_end)
