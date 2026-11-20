@@ -20,10 +20,10 @@ import sys
 import os
 import json
 from poxp_protocol import (
-    parse_poxp_message, build_ack, build_poxp_message,
+    parse_poxp_message, build_ack, build_poxp_message, POXP_VERSION,
     STATUS_OK, STATUS_REGISTERED, STATUS_BAD_REQUEST,
     STATUS_CLIENT_NOT_FOUND, STATUS_CLIENT_UNAVAILABLE,
-    STATUS_RELAY_ERROR, get_iso_timestamp
+    STATUS_RELAY_ERROR, STATUS_SERVER_ERROR, get_iso_timestamp
 )
 from storage_manager import StorageManager
 
@@ -175,6 +175,11 @@ class ServerNode:
                     conn.sendall(build_ack(STATUS_BAD_REQUEST[0], STATUS_BAD_REQUEST[1], str(uuid.uuid4()), self.server_id).encode("utf-8"))
                     return
 
+                # Every POXP request must carry the protocol token (e.g. 'SUBMIT POXP/1.0').
+                if parsed.get('protocol_or_status') != POXP_VERSION:
+                    conn.sendall(build_ack(STATUS_BAD_REQUEST[0], STATUS_BAD_REQUEST[1], str(uuid.uuid4()), self.server_id, f"Missing or unsupported protocol token; expected '{POXP_VERSION}'").encode("utf-8"))
+                    return
+
                 # Packet logging to command prompt
                 headers = parsed.get("headers", {})
                 method = parsed.get("method_or_code")
@@ -201,7 +206,7 @@ class ServerNode:
 
             except Exception as e:
                 print(f"[{self.server_id}] [ERROR] Exception processing connection: {e}")
-                err_ack = build_ack(500, "SERVER_ERROR", str(uuid.uuid4()), self.server_id, str(e))
+                err_ack = build_ack(STATUS_SERVER_ERROR[0], STATUS_SERVER_ERROR[1], str(uuid.uuid4()), self.server_id, str(e))
                 try:
                     conn.sendall(err_ack.encode("utf-8"))
                 except Exception:
@@ -328,7 +333,7 @@ class ServerNode:
                                 resp.extend(chunk)
 
                         parsed_ack = parse_poxp_message(resp.decode("utf-8", errors="replace"))
-                        if parsed_ack and parsed_ack.get("method_or_code") == "200":
+                        if parsed_ack and parsed_ack.get("method_or_code") == str(STATUS_OK[0]):
                             print(f"[{self.server_id}] [RELAY SUCCESS] Remote {dest_server} accepted relay for {recipient}.")
                             return build_ack(STATUS_OK[0], STATUS_OK[1], msg_id, "None", "Relayed and acknowledged by remote server.")
                         elif parsed_ack and parsed_ack.get("method_or_code") == str(STATUS_CLIENT_UNAVAILABLE[0]):

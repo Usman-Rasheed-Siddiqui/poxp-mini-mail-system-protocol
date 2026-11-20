@@ -17,7 +17,7 @@ import uvicorn
 import os
 import sys
 import base64
-from fastapi import FastAPI, Request, Form, UploadFile, File
+from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from client_node import ClientNode
 from poxp_protocol import ATTACHMENT_START_TAG, ATTACHMENT_END_TAG

@@ -19,14 +19,14 @@ class StorageManager:
         with self.lock:
             if not os.path.exists(self.storage_file):
                 with open(self.storage_file, "w", encoding="utf-8") as f:
-                    json.dump({"inboxes": {}, "sent": {}}, f, indent=2)
+                    json.dump({"inboxes": {}}, f, indent=2)
 
     def _read_data(self):
         try:
             with open(self.storage_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            return {"inboxes": {}, "sent": {}}
+            return {"inboxes": {}}
 
     def _write_data(self, data):
         with open(self.storage_file, "w", encoding="utf-8") as f:

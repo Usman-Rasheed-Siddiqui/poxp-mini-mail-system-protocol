@@ -16,7 +16,8 @@ import json
 import time
 import threading
 from poxp_protocol import (
-    build_poxp_message, parse_poxp_message, get_iso_timestamp
+    build_poxp_message, build_ack, parse_poxp_message, get_iso_timestamp,
+    STATUS_OK, STATUS_CLIENT_UNAVAILABLE, STATUS_RELAY_ERROR, STATUS_SERVER_UNAVAILABLE
 )
 from storage_manager import StorageManager
 
@@ -105,13 +106,11 @@ class ClientNode:
     def _server_unavailable_ack(self, err):
         """503 SERVER_UNAVAILABLE: the client's OWN server can't be reached. A dead
         server can't send an ack, so the client raises this code locally."""
-        return {
-            "type": "ACK",
-            "method_or_code": "503",
-            "protocol_or_status": "SERVER_UNAVAILABLE",
-            "headers": {"Error at": self.server_ip},
-            "body": f"Server {self.server_ip}:{self.server_port} is unreachable ({err})",
-        }
+        # Built with the same serializer/parser as a real server ack so it carries
+        # the same "503 SERVER_UNAVAILABLE POXP/1.0" status line.
+        raw = build_ack(STATUS_SERVER_UNAVAILABLE[0], STATUS_SERVER_UNAVAILABLE[1], str(uuid.uuid4()), self.server_ip,
+                        f"Server {self.server_ip}:{self.server_port} is unreachable ({err})")
+        return parse_poxp_message(raw)
 
     def send_email(self, receiver_email, subject, body, priority="moderate", attachment_filename=None, attachment_bytes=None):
         """Dispatches SUBMIT POXP/1.0 with email headers, body, and optional 10MB attachment."""
@@ -135,7 +134,7 @@ class ClientNode:
             status = ack.get("protocol_or_status") if ack else "NO_RESPONSE"
 
             # Check if timed out or failed due to offline recipient / server
-            if code in ("480", "503", "502"):
+            if code in tuple(str(s[0]) for s in (STATUS_CLIENT_UNAVAILABLE, STATUS_SERVER_UNAVAILABLE, STATUS_RELAY_ERROR)):
                 self.log(f"[DELIVERY PAUSED] Server reported: {code} {status}. Reason: {ack.get('body', '')}")
                 self.pending_retry = {
                     "receiver": receiver_email,
@@ -146,7 +145,7 @@ class ClientNode:
                     "att_bytes": attachment_bytes,
                     "error_msg": ack.get("body", "")
                 }
-            elif code == "200":
+            elif code == str(STATUS_OK[0]):
                 self.log(f"[DELIVERY SUCCESS] 200 OK — Email delivered and acknowledged. ID: {msg_id}")
                 self.pending_retry = None
             else:

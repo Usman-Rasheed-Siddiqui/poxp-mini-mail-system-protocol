@@ -7,6 +7,10 @@ Handles message framing, headers, timestamps, status codes, and 10MB attachments
 import base64
 from datetime import datetime, timezone, timedelta
 
+# Protocol name/version carried on the first line of EVERY POXP message
+# (requests, relays and acknowledgements alike).
+POXP_VERSION = "POXP/1.0"
+
 # Standard & Custom Status Codes
 STATUS_OK = (200, "OK")
 STATUS_REGISTERED = (201, "REGISTERED")
@@ -46,7 +50,7 @@ def build_poxp_message(method, headers, body="", attachment_filename=None, attac
 
     out_headers["Length"] = str(len(final_body))
 
-    lines = [f"{method} POXP/1.0"]
+    lines = [f"{method} {POXP_VERSION}"]
     for k, v in out_headers.items():
         lines.append(f"{k}: {v}")
     lines.append("")
@@ -61,7 +65,7 @@ def build_ack(code, short_name, identifier, error_at="None", body=""):
     request or acknowledgement -- is self-identifying on the wire.
     """
     lines = [
-        f"{code} {short_name} POXP/1.0",
+        f"{code} {short_name} {POXP_VERSION}",
         f"Identifier: {identifier}",
         f"Time of Acknowledgement: {get_iso_timestamp()}",
         f"Error at: {error_at}",

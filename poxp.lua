@@ -17,7 +17,15 @@
 
   What it dissects:
     - The request/status line (SUBMIT, RELAY, REGISTER, FETCH, or a 3-digit
-      ACK code such as "200 OK").
+      ACK code such as "200 OK POXP/1.0"). EVERY POXP line ends with the
+      "POXP/1.0" protocol token; a request without it is flagged (the server
+      answers such a request with 400 BAD_REQUEST).
+    - The status code table (see STATUS_TABLE below): 200 OK, 201 REGISTERED,
+      400 BAD_REQUEST, 404 CLIENT_NOT_FOUND, 480 CLIENT_UNAVAILABLE,
+      500 SERVER_ERROR, 502 RELAY_ERROR, 503 SERVER_UNAVAILABLE. Each ACK shows
+      its meaning, and error codes (>= 400) raise an expert-info warning.
+      Note: 503 is raised by the client itself when it cannot reach its own
+      server, so it never appears on the wire / in a capture.
     - Every "Key: Value" header line, exposed both as a generic repeated
       field and as named fields for the headers POXP actually uses
       (Sender/Receiver email, Identifier, Priority, Content-Type, Length,
@@ -59,6 +67,8 @@ local f_msg_type        = ProtoField.string("poxp.msg_type", "Message Type")    
 local f_method_or_code  = ProtoField.string("poxp.method_or_code", "Method / Status Code")
 local f_version_or_name = ProtoField.string("poxp.version_or_name", "Status Name")
 local f_proto_version   = ProtoField.string("poxp.protocol_version", "Protocol Version")
+local f_proto_ok        = ProtoField.bool("poxp.protocol_token_ok", "Carries POXP/1.0 token")
+local f_status_meaning  = ProtoField.string("poxp.status_meaning", "Status Meaning")
 local f_header_line     = ProtoField.string("poxp.header", "Header")                     -- generic, repeats
 local f_header_count    = ProtoField.uint32("poxp.header_count", "Header Count")
 
@@ -92,7 +102,8 @@ local f_segment_bytes    = ProtoField.uint32("poxp.segment_bytes", "TCP Segment 
 local f_total_msg_bytes  = ProtoField.uint32("poxp.total_message_bytes", "Total POXP Message Bytes (reassembled)")
 
 poxp_proto.fields = {
-    f_msg_type, f_method_or_code, f_version_or_name, f_proto_version, f_header_line, f_header_count,
+    f_msg_type, f_method_or_code, f_version_or_name, f_proto_version, f_proto_ok, f_status_meaning,
+    f_header_line, f_header_count,
     f_sender_email, f_receiver_email, f_client_email, f_identifier, f_priority,
     f_content_type, f_date, f_server_id, f_dns, f_subnet, f_gateway, f_ip,
     f_time_of_ack, f_error_at,
@@ -101,9 +112,31 @@ poxp_proto.fields = {
     f_segment_bytes, f_total_msg_bytes,
 }
 
+-- Expert info (shows up in Wireshark's Expert Information window / tree)
+local ef_error_status = ProtoExpert.new("poxp.error_status", "POXP error status code",
+    expert.group.RESPONSE_CODE, expert.severity.WARN)
+local ef_bad_protocol = ProtoExpert.new("poxp.bad_protocol_token",
+    "Message is missing the POXP/1.0 protocol token (server replies 400 BAD_REQUEST)",
+    expert.group.MALFORMED, expert.severity.ERROR)
+poxp_proto.experts = { ef_error_status, ef_bad_protocol }
+
 ----------------------------------------------------------------------
 -- Helpers
 ----------------------------------------------------------------------
+
+local POXP_VERSION = "POXP/1.0"
+
+-- Must stay in sync with the STATUS_* constants in poxp_protocol.py.
+local STATUS_TABLE = {
+    ["200"] = { "OK",                 "Request succeeded / email delivered and fetched by the recipient" },
+    ["201"] = { "REGISTERED",         "Client registered with its server" },
+    ["400"] = { "BAD_REQUEST",        "Malformed request (missing headers, unknown method or missing POXP/1.0 token)" },
+    ["404"] = { "CLIENT_NOT_FOUND",   "Recipient is not known to any server (not in DNS / hosts table)" },
+    ["480"] = { "CLIENT_UNAVAILABLE", "Recipient is known but not active: server held the mail 10s, then deleted it" },
+    ["500"] = { "SERVER_ERROR",       "Unexpected error inside the server" },
+    ["502"] = { "RELAY_ERROR",        "Relay failed: destination server is down/unreachable or unknown" },
+    ["503"] = { "SERVER_UNAVAILABLE", "Client could not reach its own server (raised client-side, never on the wire)" },
+}
 
 local NAMED_HEADER_FIELDS = {
     ["Sender email"]              = f_sender_email,
@@ -228,6 +261,21 @@ function poxp_proto.dissector(buffer, pinfo, tree)
     end
     if parsed.is_ack then
         subtree:add(f_version_or_name, ack_status_name or status_name)
+        local entry = STATUS_TABLE[parsed.first_token]
+        if entry then
+            subtree:add(f_status_meaning, entry[2])
+        end
+        if (tonumber(parsed.first_token) or 0) >= 400 then
+            subtree:add_proto_expert_info(ef_error_status,
+                "POXP error " .. parsed.first_token .. " " .. (ack_status_name or status_name))
+        end
+    end
+
+    -- Every POXP message (request, relay or ack) must read "<token> ... POXP/1.0".
+    local proto_ok = (proto_version == POXP_VERSION)
+    local proto_item = subtree:add(f_proto_ok, proto_ok)
+    if not proto_ok then
+        proto_item:add_proto_expert_info(ef_bad_protocol)
     end
 
     local hdr_subtree = subtree:add(poxp_proto, buffer(0, header_end), "Headers")
@@ -299,8 +347,13 @@ function poxp_proto.dissector(buffer, pinfo, tree)
     local method = parsed.first_token
     if parsed.is_ack then
         local id = parsed.headers["Identifier"] or "?"
-        info = string.format("POXP ACK %s %s  [Identifier=%s, %d bytes]",
-            method, ack_status_name or status_name, id, body_end)
+        local entry = STATUS_TABLE[method]
+        local is_err = (tonumber(method) or 0) >= 400
+        info = string.format("POXP %s %s %s  [Identifier=%s, %d bytes]",
+            is_err and "ERROR" or "ACK", method, ack_status_name or status_name, id, body_end)
+        if entry and is_err then
+            info = info .. "  -- " .. entry[2]
+        end
     elseif method == "FETCH" then
         local who = parsed.headers["Receiver email"] or parsed.headers["Client email"] or "?"
         info = string.format("POXP FETCH  %s checking mailbox  [%d bytes]", who, body_end)
@@ -315,6 +368,9 @@ function poxp_proto.dissector(buffer, pinfo, tree)
             method, from, to, body_end,
             has_attachment and (", attachment=" .. (parsed.headers["Attachment-Name"] or "?")) or "")
     end
+    if not proto_ok then
+        info = "[MISSING POXP/1.0 TOKEN] " .. info
+    end
     pinfo.cols.info = info
 
     return body_end
@@ -326,7 +382,10 @@ end
 -- Adjust/add ports here to match whatever you actually bind server_node.py
 -- to (the architecture guide uses 5025 for Server 1/A and 5026 for Server
 -- 2/B; the client-facing local FastAPI ports, e.g. 8000/8001, are plain
--- loopback HTTP and should NOT be added here).
+-- loopback HTTP and should NOT be added here). demo_errors.py uses 5201/5202,
+-- so they are registered too.
 local tcp_port_table = DissectorTable.get("tcp.port")
 tcp_port_table:add(5025, poxp_proto)
 tcp_port_table:add(5026, poxp_proto)
+tcp_port_table:add(5201, poxp_proto)
+tcp_port_table:add(5202, poxp_proto)

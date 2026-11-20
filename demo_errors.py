@@ -64,6 +64,9 @@ def main():
     banner("400 BAD_REQUEST", "A SUBMIT arrives with no 'Receiver email' header (malformed request).")
     result(raw(PORT_A, build_poxp_message("SUBMIT", {"Sender email": "alice@poxp.com", "Identifier": "demo-400"}, "hi")))
 
+    banner("400 BAD_REQUEST (no protocol token)", "A request whose first line lacks 'POXP/1.0' is rejected.")
+    result(raw(PORT_A, "SUBMIT\nSender email: alice@poxp.com\nReceiver email: bob@poxp.com\n\nhi\n"))
+
     banner("404 CLIENT_NOT_FOUND", "Alice mails someone who is in no server's DNS/hosts table.")
     result(alice.send_email("nobody@poxp.com", "hi", "hello"))
 
