@@ -234,10 +234,14 @@ function poxp_proto.dissector(buffer, pinfo, tree)
     hdr_subtree:add(f_header_count, #parsed.header_order)
     for _, key in ipairs(parsed.header_order) do
         local val = parsed.headers[key]
-        hdr_subtree:add(f_header_line, key .. ": " .. val)
         local field = NAMED_HEADER_FIELDS[key]
         if field then
+            -- Known header: show it once, as its clean named field only.
             hdr_subtree:add(field, val)
+        else
+            -- Unrecognized header: fall back to the generic "Key: Value" line
+            -- so nothing is silently dropped from the tree.
+            hdr_subtree:add(f_header_line, key .. ": " .. val)
         end
     end
     hdr_subtree:add(f_header_length, header_end)
@@ -282,16 +286,33 @@ function poxp_proto.dissector(buffer, pinfo, tree)
     subtree:add(f_total_msg_bytes, body_end)
 
     -- Info column summary line.
+    --
+    -- Only SUBMIT and RELAY are real sender -> receiver mail transfers (they
+    -- carry both a "Sender email"/"Client email" and a "Receiver email"
+    -- header), so only those get the "from -> to" arrow. FETCH and REGISTER
+    -- are single-party requests (a client checking its own mailbox, or
+    -- announcing itself to its server) that never had a counterpart header
+    -- to put on the other side of the arrow -- that's why it rendered as
+    -- "? -> client_a@poxpmail.com" / "client_a@poxpmail.com -> ?" before.
+    -- They get a one-sided line instead, with no "?" in it.
     local info
+    local method = parsed.first_token
     if parsed.is_ack then
         local id = parsed.headers["Identifier"] or "?"
         info = string.format("POXP ACK %s %s  [Identifier=%s, %d bytes]",
-            parsed.first_token, ack_status_name or status_name, id, body_end)
+            method, ack_status_name or status_name, id, body_end)
+    elseif method == "FETCH" then
+        local who = parsed.headers["Receiver email"] or parsed.headers["Client email"] or "?"
+        info = string.format("POXP FETCH  %s checking mailbox  [%d bytes]", who, body_end)
+    elseif method == "REGISTER" then
+        local who = parsed.headers["Client email"] or "?"
+        info = string.format("POXP REGISTER  %s  [%d bytes]", who, body_end)
     else
+        -- SUBMIT / RELAY
         local from = parsed.headers["Sender email"] or parsed.headers["Client email"] or "?"
         local to = parsed.headers["Receiver email"] or "?"
         info = string.format("POXP %s  %s -> %s  [%d bytes%s]",
-            parsed.first_token, from, to, body_end,
+            method, from, to, body_end,
             has_attachment and (", attachment=" .. (parsed.headers["Attachment-Name"] or "?")) or "")
     end
     pinfo.cols.info = info
