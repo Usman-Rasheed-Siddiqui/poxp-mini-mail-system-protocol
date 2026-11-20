@@ -63,6 +63,28 @@ class StorageManager:
                 self._write_data(data)
             return emails
 
+    def has_email(self, recipient_email, identifier):
+        """True if the message with this Identifier is still waiting on the server."""
+        with self.lock:
+            data = self._read_data()
+            return any(
+                e.get("headers", {}).get("Identifier") == identifier
+                for e in data["inboxes"].get(recipient_email, [])
+            )
+
+    def remove_email(self, recipient_email, identifier):
+        """Deletes ONLY the message with this Identifier (other mail is untouched).
+        Returns True if it was still there (i.e. the recipient never fetched it)."""
+        with self.lock:
+            data = self._read_data()
+            inbox = data["inboxes"].get(recipient_email, [])
+            kept = [e for e in inbox if e.get("headers", {}).get("Identifier") != identifier]
+            if len(kept) == len(inbox):
+                return False
+            data["inboxes"][recipient_email] = kept
+            self._write_data(data)
+            return True
+
     # Client-Side Persistent Store Methods
     def client_save_email(self, email_record):
         """Saves a fetched email into client-side store with unread status."""

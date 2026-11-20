@@ -23,7 +23,7 @@ from poxp_protocol import (
     parse_poxp_message, build_ack, build_poxp_message,
     STATUS_OK, STATUS_REGISTERED, STATUS_BAD_REQUEST,
     STATUS_CLIENT_NOT_FOUND, STATUS_CLIENT_UNAVAILABLE,
-    STATUS_RELAY_ERROR, STATUS_SERVER_UNAVAILABLE, get_iso_timestamp
+    STATUS_RELAY_ERROR, get_iso_timestamp
 )
 from storage_manager import StorageManager
 
@@ -148,7 +148,7 @@ class ServerNode:
 
     def handle_connection(self, conn, addr):
         with conn:
-            conn.settimeout(12.0)
+            conn.settimeout(30.0)
             try:
                 # Read until the peer half-closes its write side (recv() returns
                 # b""). The client always calls shutdown(SHUT_WR) right after
@@ -207,12 +207,33 @@ class ServerNode:
                 except Exception:
                     pass
 
+    def _hold_for_pickup(self, recipient, msg_id, hold_seconds=10.0):
+        """Keeps a stored email for up to `hold_seconds` waiting for the recipient
+        to fetch it. Returns True if fetched. Otherwise deletes that one email
+        from the server (so a client waking up later never sees it) and returns False."""
+        deadline = time.time() + hold_seconds
+        while time.time() < deadline:
+            if not self.storage.has_email(recipient, msg_id):
+                return True
+            time.sleep(0.25)
+        # remove_email() is False only if the client fetched it at the last instant.
+        if self.storage.remove_email(recipient, msg_id):
+            print(f"[{self.server_id}] [TIMEOUT] Recipient '{recipient}' did not fetch within {hold_seconds:.0f}s. Email {msg_id} deleted from server.")
+            return False
+        return True
+
     def dispatch_request(self, parsed, addr):
         method = parsed["method_or_code"]
         headers = parsed["headers"]
         body = parsed["body"]
         raw_body = parsed.get("raw_body", body)
         attachment_b64 = parsed.get("attachment_b64")
+
+        # 400: malformed request (a SUBMIT/RELAY must name both sender and receiver)
+        if method in ("SUBMIT", "RELAY"):
+            missing = [h for h in ("Sender email", "Receiver email") if not headers.get(h)]
+            if missing:
+                return build_ack(STATUS_BAD_REQUEST[0], STATUS_BAD_REQUEST[1], headers.get("Identifier", str(uuid.uuid4())), self.server_id, f"Malformed {method}: missing header(s): {', '.join(missing)}")
 
         if method == "REGISTER":
             client_email = headers.get("Client email") or headers.get("Sender email")
@@ -268,22 +289,9 @@ class ServerNode:
                 }
                 self.storage.save_incoming_email(recipient, record)
 
-                # Wait up to 10 seconds to verify client is online & fetches
-                start_time = time.time()
-                client_fetched = False
-                while time.time() - start_time < 10.0:
-                    current_inbox = self.storage.fetch_inbox(recipient, clear_fetched=False)
-                    if not any(e.get("headers", {}).get("Identifier") == msg_id for e in current_inbox):
-                        client_fetched = True
-                        break
-                    time.sleep(0.5)
-
-                if client_fetched:
+                if self._hold_for_pickup(recipient, msg_id):
                     return build_ack(STATUS_OK[0], STATUS_OK[1], msg_id, "None", "Email delivered and retrieved by recipient client.")
-                else:
-                    self.storage.fetch_inbox(recipient, clear_fetched=True)
-                    print(f"[{self.server_id}] [TIMEOUT] Recipient '{recipient}' was offline for >10s. Purged from server.")
-                    return build_ack(STATUS_CLIENT_UNAVAILABLE[0], STATUS_CLIENT_UNAVAILABLE[1], msg_id, self.server_id, f"Recipient {recipient} is offline (no fetch within 10s timeout).")
+                return build_ack(STATUS_CLIENT_UNAVAILABLE[0], STATUS_CLIENT_UNAVAILABLE[1], msg_id, self.server_id, f"Recipient {recipient} is offline (no fetch within 10s timeout).")
 
             # Cross-server relay
             else:
@@ -305,7 +313,9 @@ class ServerNode:
                     try:
                         print(f"[{self.server_id}] [RELAY ATTEMPT] Attempting cross-server connection to {dest_server} at {remote_ip}:{remote_port}...")
                         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as r_sock:
-                            r_sock.settimeout(4.0)
+                            # Remote server may hold the mail up to 10s waiting
+                            # for the recipient to fetch, so allow for that.
+                            r_sock.settimeout(15.0)
                             r_sock.connect((remote_ip, remote_port))
                             r_sock.sendall(relay_msg.encode("utf-8"))
                             r_sock.shutdown(socket.SHUT_WR)
@@ -321,6 +331,12 @@ class ServerNode:
                         if parsed_ack and parsed_ack.get("method_or_code") == "200":
                             print(f"[{self.server_id}] [RELAY SUCCESS] Remote {dest_server} accepted relay for {recipient}.")
                             return build_ack(STATUS_OK[0], STATUS_OK[1], msg_id, "None", "Relayed and acknowledged by remote server.")
+                        elif parsed_ack and parsed_ack.get("method_or_code") == str(STATUS_CLIENT_UNAVAILABLE[0]):
+                            # Remote server held the mail 10s, recipient never
+                            # fetched it, and the remote server already deleted it.
+                            # Tell client A now; do NOT keep retrying (would duplicate).
+                            print(f"[{self.server_id}] [RELAY] Recipient '{recipient}' unavailable on {dest_server}. Reporting back to sender.")
+                            return build_ack(STATUS_CLIENT_UNAVAILABLE[0], STATUS_CLIENT_UNAVAILABLE[1], msg_id, dest_server, parsed_ack.get("body") or f"Recipient {recipient} is offline (no fetch within 10s timeout).")
                         else:
                             last_err = resp.decode("utf-8", errors="replace")
                             time.sleep(1.0)
@@ -329,7 +345,8 @@ class ServerNode:
                         time.sleep(1.0)
 
                 print(f"[{self.server_id}] [RELAY TIMEOUT] Target server {dest_server} ({remote_ip}) was offline for 10 seconds: {last_err}")
-                return build_ack(STATUS_SERVER_UNAVAILABLE[0], STATUS_SERVER_UNAVAILABLE[1], msg_id, dest_server, f"Client B's server '{dest_server}' was down during transmission (10s timeout exceeded): {last_err}")
+                # Relay could not be completed because the destination server is down/unreachable.
+                return build_ack(STATUS_RELAY_ERROR[0], STATUS_RELAY_ERROR[1], msg_id, dest_server, f"Relay failed: destination server '{dest_server}' is down or unreachable (10s timeout exceeded): {last_err}")
 
         elif method == "RELAY":
             recipient = headers.get("Receiver email")
@@ -344,8 +361,10 @@ class ServerNode:
                 "enqueued_time": time.time()
             }
             self.storage.save_incoming_email(recipient, record)
-            print(f"[{self.server_id}] [RELAY STORED] Relayed message from {headers.get('Server id')} stored for client '{recipient}'.")
-            return build_ack(STATUS_OK[0], STATUS_OK[1], msg_id, "None", "Stored successfully on destination server queue.")
+            print(f"[{self.server_id}] [RELAY STORED] Relayed message from {headers.get('Server id')} held for client '{recipient}' (up to 10s).")
+            if self._hold_for_pickup(recipient, msg_id):
+                return build_ack(STATUS_OK[0], STATUS_OK[1], msg_id, "None", "Email delivered and retrieved by recipient client.")
+            return build_ack(STATUS_CLIENT_UNAVAILABLE[0], STATUS_CLIENT_UNAVAILABLE[1], msg_id, self.server_id, f"Recipient {recipient} is offline (no fetch within 10s timeout).")
 
         return build_ack(STATUS_BAD_REQUEST[0], STATUS_BAD_REQUEST[1], str(uuid.uuid4()), self.server_id, f"Unknown method {method}")
 

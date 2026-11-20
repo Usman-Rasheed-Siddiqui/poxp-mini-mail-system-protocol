@@ -66,7 +66,7 @@ class ClientNode:
 
     def _send_raw_request(self, payload_str):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
-            client.settimeout(12.0)
+            client.settimeout(30.0)  # server may hold mail ~10s (+ relay hop) before replying
             client.connect((self.server_ip, self.server_port))
             client.sendall(payload_str.encode("utf-8"))
             client.shutdown(socket.SHUT_WR)
@@ -92,10 +92,26 @@ class ClientNode:
         }
         msg = build_poxp_message("REGISTER", headers)
         self.log(f"[OUTGOING] REGISTER POXP/1.0 -> Server {self.server_ip}:{self.server_port} (Local IP: {self.local_ip})")
-        reply = self._send_raw_request(msg)
+        try:
+            reply = self._send_raw_request(msg)
+        except OSError as e:
+            reply = self._server_unavailable_ack(e)
+            self.log(f"[REGISTER FAILED] {reply['method_or_code']} {reply['protocol_or_status']}: {reply['body']}")
+            return reply
         if reply:
             self.log(f"[ACK RECEIVED] {reply.get('method_or_code')} {reply.get('protocol_or_status')} from {reply.get('headers', {}).get('Error at', 'server')}")
         return reply
+
+    def _server_unavailable_ack(self, err):
+        """503 SERVER_UNAVAILABLE: the client's OWN server can't be reached. A dead
+        server can't send an ack, so the client raises this code locally."""
+        return {
+            "type": "ACK",
+            "method_or_code": "503",
+            "protocol_or_status": "SERVER_UNAVAILABLE",
+            "headers": {"Error at": self.server_ip},
+            "body": f"Server {self.server_ip}:{self.server_port} is unreachable ({err})",
+        }
 
     def send_email(self, receiver_email, subject, body, priority="moderate", attachment_filename=None, attachment_bytes=None):
         """Dispatches SUBMIT POXP/1.0 with email headers, body, and optional 10MB attachment."""
@@ -136,6 +152,19 @@ class ClientNode:
             else:
                 self.log(f"[DELIVERY FAILED] Code {code} {status}: {ack.get('body', '')}")
 
+            return ack
+        except OSError as e:
+            ack = self._server_unavailable_ack(e)
+            self.log(f"[DELIVERY PAUSED] {ack['method_or_code']} {ack['protocol_or_status']}: {ack['body']}")
+            self.pending_retry = {
+                "receiver": receiver_email,
+                "subject": subject,
+                "body": body,
+                "priority": priority,
+                "att_name": attachment_filename,
+                "att_bytes": attachment_bytes,
+                "error_msg": ack["body"]
+            }
             return ack
         except Exception as e:
             self.log(f"[SOCKET ERROR] Failed communicating with server: {e}")
