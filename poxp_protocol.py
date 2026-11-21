@@ -60,7 +60,7 @@ def build_poxp_message(method, headers, body="", attachment_filename=None, attac
 def build_ack(code, short_name, identifier, error_at="None", body=""):
     """
     Serializes a POXP acknowledgement message.
-    Status line now carries the protocol/version token too (e.g. "200 OK POXP/1.0"),
+    Status line carries the protocol/version token (e.g. "200 OK POXP/1.0"),
     matching the request-side lines ("SUBMIT POXP/1.0", etc.) so every POXP message --
     request or acknowledgement -- is self-identifying on the wire.
     """

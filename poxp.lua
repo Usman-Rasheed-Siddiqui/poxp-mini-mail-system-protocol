@@ -98,7 +98,7 @@ local f_attachment_len  = ProtoField.uint32("poxp.attachment_length", "Attachmen
 local f_attachment_b64_len = ProtoField.uint32("poxp.attachment_b64_length", "Attachment base64 payload length (chars, this segment)")
 
 -- Wire-level byte accounting requested for the R5/R6 report sections
-local f_segment_bytes    = ProtoField.uint32("poxp.segment_bytes", "TCP Segment Payload Bytes (this packet)")
+local f_segment_bytes    = ProtoField.uint32("poxp.segment_bytes", "TCP Segment Payload Bytes (bytes, after TCP reassembly)")
 local f_total_msg_bytes  = ProtoField.uint32("poxp.total_message_bytes", "Total POXP Message Bytes (reassembled)")
 
 poxp_proto.fields = {

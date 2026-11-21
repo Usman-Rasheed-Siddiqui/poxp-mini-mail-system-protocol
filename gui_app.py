@@ -479,10 +479,19 @@ def create_app(client_node: ClientNode):
         if client_node.pending_retry:
             rec = client_node.pending_retry.get("receiver")
             err = client_node.pending_retry.get("error_msg")
+            code = client_node.pending_retry.get("code")
+
+            if code == "503":
+                reason_text = f"Your own server could not be reached ({err})."
+            elif code == "502":
+                reason_text = f"The destination server could not be reached ({err})."
+            else:
+                reason_text = f"Target {rec} was offline for &gt;10s ({err})."
+
             retry_banner = f"""
             <div class="retry-prompt">
                 <div>
-                    <strong>Transmission Paused:</strong> Target {rec} was offline for &gt;10s ({err}).
+                    <strong>Transmission Paused:</strong> {reason_text}
                     <br><small>Would you like to retry sending now or cancel?</small>
                 </div>
                 <div>

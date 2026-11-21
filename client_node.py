@@ -143,7 +143,8 @@ class ClientNode:
                     "priority": priority,
                     "att_name": attachment_filename,
                     "att_bytes": attachment_bytes,
-                    "error_msg": ack.get("body", "")
+                    "error_msg": ack.get("body", ""),
+                    "code": code
                 }
             elif code == str(STATUS_OK[0]):
                 self.log(f"[DELIVERY SUCCESS] 200 OK — Email delivered and acknowledged. ID: {msg_id}")
@@ -162,7 +163,8 @@ class ClientNode:
                 "priority": priority,
                 "att_name": attachment_filename,
                 "att_bytes": attachment_bytes,
-                "error_msg": ack["body"]
+                "error_msg": ack["body"],
+                "code": ack["method_or_code"]
             }
             return ack
         except Exception as e:
@@ -174,7 +176,8 @@ class ClientNode:
                 "priority": priority,
                 "att_name": attachment_filename,
                 "att_bytes": attachment_bytes,
-                "error_msg": str(e)
+                "error_msg": str(e),
+                "code": "None"
             }
             return None
 
