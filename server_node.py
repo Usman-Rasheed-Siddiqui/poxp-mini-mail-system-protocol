@@ -335,7 +335,7 @@ class ServerNode:
                         parsed_ack = parse_poxp_message(resp.decode("utf-8", errors="replace"))
                         if parsed_ack and parsed_ack.get("method_or_code") == str(STATUS_OK[0]):
                             print(f"[{self.server_id}] [RELAY SUCCESS] Remote {dest_server} accepted relay for {recipient}.")
-                            return build_ack(STATUS_OK[0], STATUS_OK[1], msg_id, "None", "Relayed and acknowledged by remote server.")
+                            return build_ack(STATUS_OK[0], STATUS_OK[1], msg_id, "None", parsed_ack.get("body") or "Relayed and acknowledged by remote server.")
                         elif parsed_ack and parsed_ack.get("method_or_code") == str(STATUS_CLIENT_UNAVAILABLE[0]):
                             # Remote server held the mail 10s, recipient never
                             # fetched it, and the remote server already deleted it.
