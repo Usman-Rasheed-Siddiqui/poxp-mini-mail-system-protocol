@@ -65,9 +65,11 @@ class ClientNode:
         except Exception:
             return fallback
 
-    def _send_raw_request(self, payload_str):
+    def _send_raw_request(self, payload_str, timeout=30.0):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
-            client.settimeout(30.0)  # server may hold mail ~10s (+ relay hop) before replying
+            client.settimeout(timeout)  # caller-supplied: REGISTER/FETCH fail fast (5s),
+                                        # SUBMIT keeps the long default (server may hold
+                                        # mail ~10s, +another ~10s if it has to relay)
             client.connect((self.server_ip, self.server_port))
             client.sendall(payload_str.encode("utf-8"))
             client.shutdown(socket.SHUT_WR)
@@ -94,7 +96,7 @@ class ClientNode:
         msg = build_poxp_message("REGISTER", headers)
         self.log(f"[OUTGOING] REGISTER POXP/1.0 -> Server {self.server_ip}:{self.server_port} (Local IP: {self.local_ip})")
         try:
-            reply = self._send_raw_request(msg)
+            reply = self._send_raw_request(msg, timeout=5.0)
         except OSError as e:
             reply = self._server_unavailable_ack(e)
             self.log(f"[REGISTER FAILED] {reply['method_or_code']} {reply['protocol_or_status']}: {reply['body']}")
@@ -221,7 +223,7 @@ class ClientNode:
         }
         msg = build_poxp_message("FETCH", headers)
         try:
-            reply = self._send_raw_request(msg)
+            reply = self._send_raw_request(msg, timeout=5.0)
             if reply and reply.get("body"):
                 emails = json.loads(reply["body"])
                 if emails:
