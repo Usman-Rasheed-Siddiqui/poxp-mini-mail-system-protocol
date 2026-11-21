@@ -48,6 +48,14 @@ class StorageManager:
         priority (Python's sort is stable, so this gives FIFO tie-breaking).
         This is the entire "priority" mechanism: no queue, no worker threads —
         just an ordering step applied at read time.
+
+        The "raw_body" key is intentionally dropped from the returned emails
+        (the copy on disk keeps it). By the time a client fetches its inbox,
+        any relay step has already completed, and the client only ever reads
+        "attachment_b64" to serve downloads (see gui_app.py's
+        /download/{identifier} route), so shipping "raw_body" over FETCH was
+        pure redundant bandwidth, roughly doubling the response size for
+        messages with attachments.
         """
         with self.lock:
             data = self._read_data()
@@ -58,6 +66,7 @@ class StorageManager:
                     e.get("headers", {}).get("Priority", "moderate"), 2
                 ),
             )
+            emails = [{k: v for k, v in e.items() if k != "raw_body"} for e in emails]
             if clear_fetched and emails:
                 data["inboxes"][recipient_email] = []
                 self._write_data(data)
