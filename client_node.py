@@ -17,7 +17,8 @@ import time
 import threading
 from poxp_protocol import (
     build_poxp_message, build_ack, parse_poxp_message, get_iso_timestamp,
-    STATUS_OK, STATUS_CLIENT_UNAVAILABLE, STATUS_RELAY_ERROR, STATUS_SERVER_UNAVAILABLE
+    STATUS_OK, STATUS_CLIENT_UNAVAILABLE, STATUS_RELAY_ERROR, STATUS_SERVER_UNAVAILABLE,
+    REGISTER_TIMEOUT, FETCH_TIMEOUT, SUBMIT_TIMEOUT
 )
 from storage_manager import StorageManager
 
@@ -65,12 +66,19 @@ class ClientNode:
         except Exception:
             return fallback
 
-    def _send_raw_request(self, payload_str, timeout=30.0):
+    def _send_raw_request(self, payload_str, timeout=SUBMIT_TIMEOUT):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
-            client.settimeout(timeout)  # caller-supplied: REGISTER/FETCH fail fast (5s),
-                                        # SUBMIT keeps the long default (server may hold
-                                        # mail ~10s, +another ~10s if it has to relay)
-            client.connect((self.server_ip, self.server_port))
+            client.settimeout(timeout)  # caller-supplied: REGISTER/FETCH use their own
+                                        # timeouts; SUBMIT keeps the long default (the
+                                        # server may relay a large attachment and then
+                                        # hold the mail ~10s for pickup before it acks)
+            try:
+                client.connect((self.server_ip, self.server_port))
+            except OSError as e:
+                # Tag connect failures so a dead server (could not connect) can be
+                # told apart from a live server that was slow to acknowledge.
+                e.poxp_connect_failed = True
+                raise
             client.sendall(payload_str.encode("utf-8"))
             client.shutdown(socket.SHUT_WR)
 
@@ -96,7 +104,7 @@ class ClientNode:
         msg = build_poxp_message("REGISTER", headers)
         self.log(f"[OUTGOING] REGISTER POXP/1.0 -> Server {self.server_ip}:{self.server_port} (Local IP: {self.local_ip})")
         try:
-            reply = self._send_raw_request(msg, timeout=5.0)
+            reply = self._send_raw_request(msg, timeout=REGISTER_TIMEOUT)
         except OSError as e:
             reply = self._server_unavailable_ack(e)
             self.log(f"[REGISTER FAILED] {reply['method_or_code']} {reply['protocol_or_status']}: {reply['body']}")
@@ -110,9 +118,17 @@ class ClientNode:
         server can't send an ack, so the client raises this code locally."""
         # Built with the same serializer/parser as a real server ack so it carries
         # the same "503 SERVER_UNAVAILABLE POXP/1.0" status line.
-        raw = build_ack(STATUS_SERVER_UNAVAILABLE[0], STATUS_SERVER_UNAVAILABLE[1], str(uuid.uuid4()), self.server_ip,
-                        f"Server {self.server_ip}:{self.server_port} is unreachable ({err})")
-        return parse_poxp_message(raw)
+        if getattr(err, "poxp_connect_failed", False):
+            body = f"Server {self.server_ip}:{self.server_port} is unreachable ({err})"
+        else:
+            # Connected and sent, but the server never replied in time: it is up
+            # but slow (e.g. still relaying a large attachment), not unreachable.
+            body = (f"Server {self.server_ip}:{self.server_port} accepted the connection but sent "
+                    f"no acknowledgement in time ({err})")
+        raw = build_ack(STATUS_SERVER_UNAVAILABLE[0], STATUS_SERVER_UNAVAILABLE[1], str(uuid.uuid4()), self.server_ip, body)
+        parsed = parse_poxp_message(raw)
+        parsed["connect_failed"] = getattr(err, "poxp_connect_failed", False)
+        return parsed
 
     def send_email(self, receiver_email, subject, body, priority="moderate", attachment_filename=None, attachment_bytes=None):
         """Dispatches SUBMIT POXP/1.0 with email headers, body, and optional 10MB attachment."""
@@ -146,6 +162,7 @@ class ClientNode:
                     "att_name": attachment_filename,
                     "att_bytes": attachment_bytes,
                     "error_msg": ack.get("body", ""),
+                    "error_at": ack.get("headers", {}).get("Error at", ""),
                     "code": code
                 }
             elif code == str(STATUS_OK[0]):
@@ -166,7 +183,8 @@ class ClientNode:
                 "att_name": attachment_filename,
                 "att_bytes": attachment_bytes,
                 "error_msg": ack["body"],
-                "code": ack["method_or_code"]
+                "code": ack["method_or_code"],
+                "connect_failed": ack["connect_failed"]
             }
             return ack
         except Exception as e:
@@ -223,7 +241,7 @@ class ClientNode:
         }
         msg = build_poxp_message("FETCH", headers)
         try:
-            reply = self._send_raw_request(msg, timeout=5.0)
+            reply = self._send_raw_request(msg, timeout=FETCH_TIMEOUT)
             if reply and reply.get("body"):
                 emails = json.loads(reply["body"])
                 if emails:

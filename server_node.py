@@ -23,7 +23,8 @@ from poxp_protocol import (
     parse_poxp_message, build_ack, build_poxp_message, POXP_VERSION,
     STATUS_OK, STATUS_REGISTERED, STATUS_BAD_REQUEST,
     STATUS_CLIENT_NOT_FOUND, STATUS_CLIENT_UNAVAILABLE,
-    STATUS_RELAY_ERROR, STATUS_SERVER_ERROR, get_iso_timestamp
+    STATUS_RELAY_ERROR, STATUS_SERVER_ERROR, get_iso_timestamp,
+    SERVER_CONN_TIMEOUT, RELAY_SOCKET_TIMEOUT
 )
 from storage_manager import StorageManager
 
@@ -148,7 +149,7 @@ class ServerNode:
 
     def handle_connection(self, conn, addr):
         with conn:
-            conn.settimeout(30.0)
+            conn.settimeout(SERVER_CONN_TIMEOUT)
             try:
                 # Read until the peer half-closes its write side (recv() returns
                 # b""). The client always calls shutdown(SHUT_WR) right after
@@ -319,8 +320,9 @@ class ServerNode:
                         print(f"[{self.server_id}] [RELAY ATTEMPT] Attempting cross-server connection to {dest_server} at {remote_ip}:{remote_port}...")
                         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as r_sock:
                             # Remote server may hold the mail up to 10s waiting
-                            # for the recipient to fetch, so allow for that.
-                            r_sock.settimeout(15.0)
+                            # for the recipient to fetch, and a large attachment
+                            # takes time to transfer, so allow for both.
+                            r_sock.settimeout(RELAY_SOCKET_TIMEOUT)
                             r_sock.connect((remote_ip, remote_port))
                             r_sock.sendall(relay_msg.encode("utf-8"))
                             r_sock.shutdown(socket.SHUT_WR)

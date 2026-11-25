@@ -17,10 +17,11 @@ import uvicorn
 import os
 import sys
 import base64
+import html as html_lib
 from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from client_node import ClientNode
-from poxp_protocol import ATTACHMENT_START_TAG, ATTACHMENT_END_TAG
+from poxp_protocol import ATTACHMENT_START_TAG, ATTACHMENT_END_TAG, SUBMIT_TIMEOUT
 
 HTML_TEMPLATE_RAW = """<!DOCTYPE html>
 <html lang="en">
@@ -470,23 +471,41 @@ def create_app(client_node: ClientNode):
                 </div>
                 """
 
+        # The Retry/Cancel prompt already describes a paused send, so the red
+        # "Action Result" banner for that same failure would only repeat it.
+        pending = client_node.pending_retry
+
         status_banner = ""
-        if last_status["code"]:
+        if last_status["code"] and not pending:
             cls = "banner-success" if last_status["code"].startswith("200") or last_status["code"].startswith("201") else "banner-error"
-            status_banner = f"<div class='banner {cls}'><strong>Action Result:</strong> {last_status['code']} — {last_status['text']}</div>"
+            status_banner = f"<div class='banner {cls}'><strong>Action Result:</strong> {html_lib.escape(last_status['code'])} — {html_lib.escape(last_status['text'])}</div>"
+        # One-shot: an action's result is shown on the page load right after the
+        # action, and is gone on the next reload instead of lingering forever.
+        last_status["code"] = ""
+        last_status["text"] = ""
 
         retry_banner = ""
-        if client_node.pending_retry:
-            rec = client_node.pending_retry.get("receiver")
-            err = client_node.pending_retry.get("error_msg")
-            code = client_node.pending_retry.get("code")
+        if pending:
+            rec = html_lib.escape(pending.get("receiver") or "the recipient")
+            code = pending.get("code")
+            server = html_lib.escape(f"{client_node.server_ip}:{client_node.server_port}")
 
-            if code == "503":
-                reason_text = f"Your own server could not be reached ({err})."
+            # Plain-language reason per status code. The raw technical error
+            # (socket exception text, etc.) stays in the Socket Console log.
+            if code == "480":
+                reason_text = f"{code} — {rec} did not pick up the email within 10 seconds, so the server deleted it. The recipient appears to be offline."
+            elif code == "502" and "unknown in DNS" in (pending.get("error_msg") or ""):
+                reason_text = f"{code} — Your server does not know which server hosts {rec}, so it could not relay the email."
             elif code == "502":
-                reason_text = f"The destination server could not be reached ({err})."
+                dest = html_lib.escape(pending.get("error_at") or "the destination server")
+                reason_text = f"{code} — The destination server '{dest}' is down or unreachable, so your server could not relay the email."
+            elif code == "503" and pending.get("connect_failed", True):
+                reason_text = f"{code} — Your own server ({server}) could not be reached. It may be down or the address may be wrong."
+            elif code == "503":
+                reason_text = (f"{code} — Your server ({server}) did not confirm delivery within {SUBMIT_TIMEOUT:.0f} seconds. "
+                               f"It may still be delivering the email, so check with {rec} before retrying.")
             else:
-                reason_text = f"Target {rec} was offline for &gt;10s ({err})."
+                reason_text = "Sending failed because of an unexpected error. See the Socket Console for details."
 
             retry_banner = f"""
             <div class="retry-prompt">
@@ -517,7 +536,7 @@ def create_app(client_node: ClientNode):
         html = html.replace("__STATUS_BANNER__", status_banner)
         html = html.replace("__RETRY_BANNER__", retry_banner)
         html = html.replace("__INBOX_HTML__", inbox_html)
-        html = html.replace("__CONSOLE_LOGS__", console_text)
+        html = html.replace("__CONSOLE_LOGS__", html_lib.escape(console_text))
 
         return html
 

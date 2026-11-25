@@ -25,6 +25,18 @@ STATUS_SERVER_UNAVAILABLE = (503, "SERVER_UNAVAILABLE")
 # messages when a mailbox is fetched; it is metadata, not a scheduling queue.
 PRIORITY_WEIGHT = {"important": 1, "moderate": 2, "low": 3}
 
+# Socket timeouts in seconds. Each one is an idle timeout per socket operation
+# (connect / one send / one recv), not a deadline for the whole exchange. A 10 MB
+# attachment travels as ~13.5 MB of base64, which needs this headroom on slower
+# LAN / Wi-Fi links. These do NOT change the protocol's 10-second windows
+# (recipient-offline hold and destination-server relay retry) in server_node.py.
+REGISTER_TIMEOUT = 20.0      # client -> own server, REGISTER
+FETCH_TIMEOUT = 20.0         # client -> own server, FETCH (inbox may carry attachments)
+SUBMIT_TIMEOUT = 180.0       # client -> own server, SUBMIT (waits while the server
+                             # relays and holds the mail up to 10s for pickup)
+SERVER_CONN_TIMEOUT = 180.0  # server <- any incoming connection
+RELAY_SOCKET_TIMEOUT = 120.0 # server -> remote server, RELAY
+
 ATTACHMENT_START_TAG = "---POXP_ATTACHMENT_BEGIN---"
 ATTACHMENT_END_TAG = "---POXP_ATTACHMENT_END---"
 
