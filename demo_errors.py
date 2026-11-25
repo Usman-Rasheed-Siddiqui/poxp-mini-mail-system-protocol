@@ -31,11 +31,14 @@ def result(ack):
     print(f"  >>> RESULT: {ack.get('method_or_code')} {ack.get('protocol_or_status')}  |  {ack.get('body', '')}")
 
 
-def raw(port, text):
-    """Send arbitrary text to a server, return the parsed ack."""
+def raw(port, text, source_ip=None):
+    """Send arbitrary text to a server, return the parsed ack. `source_ip` makes the
+    connection come from another local address (e.g. 127.0.0.2) to play an impostor."""
     import socket
     from poxp_protocol import parse_poxp_message
     with socket.socket() as s:
+        if source_ip:
+            s.bind((source_ip, 0))
         s.settimeout(30)
         s.connect(("127.0.0.1", port))
         s.sendall(text.encode())
@@ -56,10 +59,28 @@ def main():
         s.update_dns("server_a", {"ip": "127.0.0.1", "port": PORT_A, "server": "server_a"})
         s.update_dns("server_b", {"ip": "127.0.0.1", "port": PORT_B, "server": "server_b"})
 
+    # Alice is listed in server A's DNS (as if from its hosts file); Mallory is not.
+    srv_a.update_dns("alice@poxp.com", {"ip": "127.0.0.1", "server": "server_a"})
     alice = ClientNode("alice@poxp.com", "127.0.0.1", PORT_A)
 
-    banner("201 REGISTERED", "Alice announces herself to her server.")
+    banner("201 REGISTERED", "Alice (listed in server A's DNS hosts file) announces herself to her server.")
     result(alice.register_dns())
+
+    mallory = ClientNode("mallory@poxp.com", "127.0.0.1", PORT_A)
+    banner("404 CLIENT_NOT_FOUND (REGISTER)",
+           "Mallory is NOT in server A's DNS hosts file, so her registration is refused and she stays idle.")
+    result(mallory.register_dns())
+    mallory.shutdown()
+
+    banner("404 CLIENT_NOT_FOUND (impostor IP)",
+           "Someone claims to be alice@poxp.com but connects from 127.0.0.2, not the IP in the DNS hosts file (127.0.0.1).")
+    result(raw(PORT_A, build_poxp_message("REGISTER", {"Client email": "alice@poxp.com", "IP": "127.0.0.1", "Identifier": "demo-imp"}),
+               source_ip="127.0.0.2"))
+
+    srv_b.update_dns("dave@poxp.com", {"ip": "127.0.0.1", "server": "server_b"})
+    banner("404 CLIENT_NOT_FOUND (FETCH without REGISTER)",
+           "Dave is listed on server B with the right IP but never registered, so he may not read a mailbox there.")
+    result(raw(PORT_B, build_poxp_message("FETCH", {"Receiver email": "dave@poxp.com", "Identifier": "demo-nofetch"})))
 
     banner("400 BAD_REQUEST", "A SUBMIT arrives with no 'Receiver email' header (malformed request).")
     result(raw(PORT_A, build_poxp_message("SUBMIT", {"Sender email": "alice@poxp.com", "Identifier": "demo-400"}, "hi")))

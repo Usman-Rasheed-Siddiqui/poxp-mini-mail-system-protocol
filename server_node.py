@@ -2,7 +2,11 @@
 server_node.py
 Continuous Multi-Threaded Raw TCP Socket Server for POXP.
 Features:
-- Windows system hosts file resolution (C:\\Windows\\System32\\drivers\\etc\\hosts)
+- Windows system hosts file resolution (C:\\Windows\\System32\\drivers\\etc\\hosts,
+  or /etc/hosts on Linux/macOS). The machine's hosts file IS the DNS and is
+  never modified by clients. A client may REGISTER only if its email is listed
+  there AND it connects from the IP listed for it; FETCH/SUBMIT additionally
+  require a prior REGISTER on this server. Anything else gets 404 CLIENT_NOT_FOUND.
 - Priority-ordered mailbox delivery (important > moderate > low, FIFO
   tie-breaking) applied at fetch time in storage_manager.py — no dispatch
   queue or worker-thread pool; each accepted connection is handled on its
@@ -35,7 +39,10 @@ class ServerNode:
         self.port = port
         self.storage = StorageManager(f"{server_id}_mailstore.json")
         self.dns_lock = threading.Lock()
-        self.dns_table = {}
+        self.dns_table = {}  # exactly what the system hosts file says; clients never change it
+        # Clients currently registered on THIS server: email -> session info.
+        # Kept apart from dns_table so a REGISTER can never rewrite DNS.
+        self.registered = {}
         self.is_running = True
         self.listen_socket = None
 
@@ -43,10 +50,14 @@ class ServerNode:
         self._load_hosts_file()
 
     def _load_hosts_file(self):
-        """Loads hostname-to-IP mappings directly from Windows system hosts file."""
+        """Loads hostname-to-IP mappings from the machine's system hosts file.
+
+        Only the system DNS file is used (Windows path first, then /etc/hosts).
+        There is deliberately no project-local DNS file: the laptop's own hosts
+        file is the single source of truth for which servers and clients exist.
+        """
         candidates = [
             r"C:\Windows\System32\drivers\etc\hosts",
-            os.path.join(os.getcwd(), "hosts"),
             "/etc/hosts"
         ]
         loaded_path = None
@@ -75,9 +86,11 @@ class ServerNode:
         if loaded_path:
             print(f"[{self.server_id}] [DNS] Successfully loaded DNS mappings from '{loaded_path}' ({len(self.dns_table)} entries).")
         else:
-            print(f"[{self.server_id}] [DNS NOTE] No system hosts file found. Initialized with empty dynamic DNS directory.")
+            print(f"[{self.server_id}] [DNS NOTE] No system hosts file found. DNS table is empty, so every client REGISTER will be refused (404).")
 
     def update_dns(self, name, record):
+        # Not called by request handling (clients can't change DNS); used only to
+        # pre-load entries, e.g. by demo_errors.py standing in for a hosts file.
         with self.dns_lock:
             self.dns_table[name.lower()] = record
             print(f"[{self.server_id}] [DNS] Record updated for '{name}': IP={record.get('ip')} Server={record.get('server')}")
@@ -85,6 +98,35 @@ class ServerNode:
     def lookup_dns(self, name):
         with self.dns_lock:
             return self.dns_table.get(name.lower())
+
+    def is_registered(self, email):
+        with self.dns_lock:
+            return email.lower() in self.registered
+
+    def _identity_error(self, email, addr):
+        """Checks that `email` is listed in the DNS hosts file AND that this
+        connection really comes from the IP listed for it. The IP used is the
+        TCP peer address (addr[0]), not anything the client typed in a header,
+        so it can't simply be claimed. Returns an error message, or None if OK."""
+        rec = self.lookup_dns(email)
+        if not rec:
+            print(f"[{self.server_id}] [IDENTITY REFUSED] '{email}' is not listed in the DNS hosts file.")
+            return f"Client {email} is not listed in {self.server_id}'s DNS hosts file."
+        if str(rec.get("ip", "")).strip() != addr[0]:
+            print(f"[{self.server_id}] [IDENTITY REFUSED] '{email}' connected from {addr[0]}, but the DNS hosts file lists {rec.get('ip')}.")
+            return f"Client {email} is not listed in {self.server_id}'s DNS hosts file at address {addr[0]}."
+        return None
+
+    def _session_error(self, email, addr):
+        """For FETCH/SUBMIT: the identity check above, plus the client must have
+        REGISTERed on this server (so skipping REGISTER doesn't get around it)."""
+        err = self._identity_error(email, addr)
+        if err:
+            return err
+        if not self.is_registered(email):
+            print(f"[{self.server_id}] [SESSION REFUSED] '{email}' has not registered on {self.server_id}.")
+            return f"Client {email} has not registered on {self.server_id}."
+        return None
 
     def start(self):
         """Starts socket server and keyboard shutdown listener."""
@@ -243,30 +285,39 @@ class ServerNode:
 
         if method == "REGISTER":
             client_email = headers.get("Client email") or headers.get("Sender email")
-            ip = headers.get("IP", addr[0])
-            subnet = headers.get("Subnet Mask", "")
-            gateway = headers.get("Gate", "")
-            dns_server = headers.get("DNS", self.server_id)
-            record = {
-                "ip": ip,
-                "subnet": subnet,
-                "gateway": gateway,
-                "dns": dns_server,
-                "server": self.server_id,
-                "registered_at": time.time()
-            }
-            if client_email:
-                self.update_dns(client_email, record)
-            return build_ack(STATUS_REGISTERED[0], STATUS_REGISTERED[1], headers.get("Identifier", str(uuid.uuid4())), self.server_id)
+            reg_id = headers.get("Identifier", str(uuid.uuid4()))
+            if not client_email:
+                return build_ack(STATUS_BAD_REQUEST[0], STATUS_BAD_REQUEST[1], reg_id, self.server_id, "Malformed REGISTER: missing header: Client email")
+            # Only a client listed in this machine's DNS (system hosts file), and
+            # connecting from the IP listed there, may join.
+            err = self._identity_error(client_email, addr)
+            if err:
+                return build_ack(STATUS_CLIENT_NOT_FOUND[0], STATUS_CLIENT_NOT_FOUND[1], reg_id, self.server_id,
+                                 f"{err} Registration refused.")
+            # Record the session separately; the DNS table itself is never changed.
+            with self.dns_lock:
+                self.registered[client_email.lower()] = {
+                    "ip": addr[0],
+                    "reported_ip": headers.get("IP", ""),
+                    "subnet": headers.get("Subnet Mask", ""),
+                    "gateway": headers.get("Gate", ""),
+                    "dns": headers.get("DNS", ""),
+                    "registered_at": time.time(),
+                }
+            print(f"[{self.server_id}] [REGISTERED] '{client_email}' from {addr[0]} (matches DNS hosts file).")
+            return build_ack(STATUS_REGISTERED[0], STATUS_REGISTERED[1], reg_id, self.server_id)
 
         elif method == "FETCH":
             client_email = headers.get("Receiver email")
             if not client_email:
                 return build_ack(STATUS_BAD_REQUEST[0], STATUS_BAD_REQUEST[1], str(uuid.uuid4()), self.server_id, "Missing Receiver email")
 
-            rec = self.lookup_dns(client_email)
-            if rec:
-                rec["last_seen"] = time.time()
+            fetch_id = headers.get("Identifier", str(uuid.uuid4()))
+            refusal = self._session_error(client_email, addr)
+            if refusal:
+                return build_ack(STATUS_CLIENT_NOT_FOUND[0], STATUS_CLIENT_NOT_FOUND[1], fetch_id, self.server_id, f"{refusal} Fetch refused.")
+            with self.dns_lock:
+                self.registered[client_email.lower()]["last_seen"] = time.time()
 
             emails = self.storage.fetch_inbox(client_email, clear_fetched=True)
             print(f"[{self.server_id}] [FETCH] Client '{client_email}' retrieved {len(emails)} emails. Purged from server.")
@@ -277,11 +328,18 @@ class ServerNode:
             msg_id = headers.get("Identifier", str(uuid.uuid4()))
             priority_val = headers.get("Priority", "moderate")
 
+            # The sender must be the listed client at its listed IP, registered here.
+            refusal = self._session_error(headers.get("Sender email"), addr)
+            if refusal:
+                return build_ack(STATUS_CLIENT_NOT_FOUND[0], STATUS_CLIENT_NOT_FOUND[1], msg_id, self.server_id, f"{refusal} Submit refused.")
+
             rec_info = self.lookup_dns(recipient)
             if not rec_info:
                 return build_ack(STATUS_CLIENT_NOT_FOUND[0], STATUS_CLIENT_NOT_FOUND[1], msg_id, self.server_id, f"Destination {recipient} not found in DNS")
 
-            dest_server = rec_info.get("server")
+            # A recipient registered on this server is delivered here; otherwise
+            # the DNS hosts file decides which server it lives on.
+            dest_server = self.server_id if self.is_registered(recipient) else rec_info.get("server")
 
             # Local delivery on the same server
             if dest_server == self.server_id:

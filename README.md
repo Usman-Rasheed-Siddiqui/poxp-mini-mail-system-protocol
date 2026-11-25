@@ -112,16 +112,13 @@ the acknowledgement travels back the same way. Each client only ever talks to it
 
 #### Step 1 — DNS: the hosts file (server machines only)
 
-Each server learns where the *other* server and its clients are from a **hosts file**, which acts
-as POXP's DNS table. At start-up the server reads the **first of these that exists** (and only that
-one):
+The server machine's **system hosts file is POXP's DNS table**: it is the only place a server learns
+which servers and clients exist. At start-up the server reads:
 
-1. `C:\Windows\System32\drivers\etc\hosts` (Windows)
-2. a file named `hosts` in the folder you start the server from
-3. `/etc/hosts` (Linux/macOS)
+- `C:\Windows\System32\drivers\etc\hosts` on Windows, or
+- `/etc/hosts` on Linux/macOS.
 
-So on Windows the system file in `C:\Windows\System32\drivers\etc\` is always the one used; on
-Linux a `hosts` file next to the code takes priority over `/etc/hosts`.
+There is no project-local DNS file: a `hosts` file placed next to the code is **not** used.
 
 How the server reads each line (`<IP> <name> <name> ...`):
 - Blank lines and lines starting with `#` are ignored.
@@ -129,22 +126,39 @@ How the server reads each line (`<IP> <name> <name> ...`):
   name** is recorded as living on **server_b**.
 - Relays to a server always use **port 5025**, so both servers must listen on 5025.
 
-A server learns about **its own** clients automatically when they start (they send `REGISTER`), so
-its hosts file only needs the **other** server and the **other** server's clients:
+**Every client must be listed in the hosts file, with its own laptop's IP, before it joins.** The
+hosts file is trusted exactly as written; clients can never change it. A server:
 
-**On Machine 1 (Server A)** — add:
+- accepts a `REGISTER` only if the **email is listed** *and* the connection **really comes from the
+  IP listed for that email** (the server checks the network connection's source address, not the IP
+  the client reports about itself);
+- accepts `FETCH` and `SUBMIT` only from a client that passes the same check **and** has registered
+  on this server, so nobody can skip `REGISTER` to read or send mail as someone else.
+
+Anything else is refused with **404 CLIENT_NOT_FOUND**, e.g. *"Client client_a@poxpmail.com is not
+listed in server_a's DNS hosts file at address 192.168.137.55. Registration refused."* A refused
+client stays **idle** (it can't send or receive, and its GUI says why). Mail to a recipient that
+isn't listed is also answered with 404.
+
+Add the servers and **all** clients, each with its **real IP**, to the hosts file on **both** server
+machines (Machine 1 and Machine 3):
+
 ```
+192.168.137.1     server_a
 192.168.137.178   server_b
+192.168.137.10    client_a@poxpmail.com
 192.168.137.20    client_b@poxpmail.com
 ```
 
-**On Machine 3 (Server B)** — add:
-```
-192.168.137.1     server_a
-192.168.137.10    client_a@poxpmail.com
-```
-
-(It does no harm to put all four lines on both servers.)
+Rules for the IPs:
+- Use each laptop's **LAN IP** as shown by `ipconfig` (e.g. `192.168.137.x` on a Windows mobile
+  hotspot), not `127.0.0.1`. A client running on the same laptop as its server must also connect to
+  the server's LAN IP.
+- Hotspot/DHCP addresses can change when a PC reconnects. If a client's IP changes, it will be
+  refused until both servers' hosts files are updated and the servers restarted, so check
+  `ipconfig` on every PC before a session.
+- Matching the IP stops other PCs from posing as a client, but it is an address check, not a
+  password: a PC that is manually given the same IP while the real one is offline would pass.
 
 **Editing it on Windows:** run Notepad as Administrator (Start → type *Notepad* → right-click →
 *Run as administrator*) → File → Open → `C:\Windows\System32\drivers\etc\hosts` (set the file type
@@ -181,7 +195,10 @@ python gui_app.py client_b@poxpmail.com 192.168.137.178 5025 8000
 
 On each client machine open **http://localhost:8000**. Each client registers with its server only
 **once, at start-up**, so its server must already be running; if you start a client too early (or
-restart its server), restart the client too. Its console should show `201 REGISTERED`.
+restart its server), restart the client too: registrations live in the server's memory, so after a
+server restart every client must register again. Its console should show `201 REGISTERED`; if it
+shows `404 CLIENT_NOT_FOUND`, the client's email or IP doesn't match that server's hosts file
+(Step 1).
 
 #### Step 4 — Send mail
 
@@ -194,8 +211,10 @@ To see the error cases: close Client B and send again (**480** after ~10 s); sto
 
 ### 2.4 Adding more clients
 
-There is no fixed pairing between clients and servers: **any client can join any server**, simply by
-passing that server's IP when it starts. You are free to add as many clients as you like, with any
+There is no fixed pairing between clients and servers: **any listed client can join any server**,
+simply by passing that server's IP when it starts. **Register each client on one server only**:
+servers don't tell each other who registered where, so a client registered on both would get some of
+its mail on one connection and some on the other. You are free to add as many clients as you like, with any
 email address, on their own machines (or several on one machine with different GUI ports: 8000,
 8001, …). For example, all of these can join Server A:
 
@@ -208,14 +227,29 @@ python gui_app.py client_c@poxpmail.com 192.168.137.1 5025 8000
 
 and the same addresses could equally join Server B by passing `192.168.137.178` instead.
 
-- **One server:** every client points at the same server IP. No hosts entries are needed for the
-  clients; the server learns each one from its `REGISTER`, and mail is delivered locally.
-- **Two servers:** each client points at the server it wants to join. To let the *other* server
-  reach it, add the client to that other server's hosts file (Step 1) and restart that server.
+**To add a new client, the server side goes first:**
+
+1. **Add the client to the DNS hosts file** on the server machine(s) — on **both** servers in a
+   two-server setup (Step 1), e.g.
+   ```
+   192.168.137.30    client_c@poxpmail.com
+   ```
+2. **Restart the server(s)** so they load the new entry (check the `[DNS] Successfully loaded …`
+   line).
+3. **Only then start the client** from its own laptop, pointing at the server it wants to join:
+   ```powershell
+   python gui_app.py client_c@poxpmail.com 192.168.137.1 5025 8000
+   ```
+
+A client that is not in the hosts file is refused when it tries to join (`REGISTER` →
+**404 CLIENT_NOT_FOUND**) and stays idle, and mail sent to it also gets **404 CLIENT_NOT_FOUND**.
+The same happens if a listed email connects from a different IP than the one in the hosts file.
 
 ### 2.5 Quick test on one machine (single server)
 
-Not a substitute for the four-machine setup, but handy for checking that everything starts:
+Not a substitute for the four-machine setup, but handy for checking that everything starts. As
+in 2.4, add the clients to the hosts file first; since everything runs on one PC and connects to
+`127.0.0.1`, list the clients with IP `127.0.0.1`:
 
 ```powershell
 python server_node.py server_a 5025
@@ -235,7 +269,7 @@ Both clients are on server_a, so mail is delivered locally (no relay).
 | 200 | OK | Mail delivered and fetched by the recipient |
 | 201 | REGISTERED | Client registered with its server |
 | 400 | BAD_REQUEST | Malformed request / missing `POXP/1.0` token |
-| 404 | CLIENT_NOT_FOUND | Recipient not in any DNS/hosts table |
+| 404 | CLIENT_NOT_FOUND | Recipient not in the server's DNS (hosts file); or a client's email/IP doesn't match the hosts file (`REGISTER`, `FETCH`, `SUBMIT`); or it sent `FETCH`/`SUBMIT` without registering on that server |
 | 480 | CLIENT_UNAVAILABLE | Recipient didn't fetch within 10 s; the server deleted the mail |
 | 500 | SERVER_ERROR | Unexpected error inside a server |
 | 502 | RELAY_ERROR | Destination server is down/unreachable (10 s retry window) |
@@ -270,7 +304,9 @@ python demo_errors.py
 ```
 
 Starts two throw-away servers on **ports 5201 and 5202** (mailstores go in a temporary folder, not
-the repo) and triggers, in order: 201, 400 (missing header), 400 (no protocol token), 404,
+the repo) and triggers, in order: 201, 404 (unlisted client's REGISTER refused), 404 (impostor
+using a listed email from the wrong IP), 404 (FETCH without REGISTER), 400 (missing
+header), 400 (no protocol token), 404 (unknown recipient),
 480 (same server), 480 (other server), 502 and 503. Takes about 35 seconds and exits by itself.
 No arguments, no other programs needed; ports 5201/5202 must be free.
 

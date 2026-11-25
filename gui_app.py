@@ -484,6 +484,19 @@ def create_app(client_node: ClientNode):
         last_status["code"] = ""
         last_status["text"] = ""
 
+        # Registration refused by the server's DNS: this client is idle. Show
+        # that permanently (it replaces any per-action result, which would
+        # only repeat the same 404).
+        if client_node.registration_refused:
+            reason = html_lib.escape(client_node.registration_refused.get("body", ""))
+            ip = html_lib.escape(client_node.local_ip)
+            status_banner = (
+                "<div class='banner banner-error'><strong>Registration refused:</strong> "
+                f"404 CLIENT_NOT_FOUND — {reason} This client is idle (it cannot send or receive mail). "
+                f"The server's DNS hosts file must list this email with this computer's IP address ({ip}); "
+                "after it is added, restart the server, then restart this client.</div>"
+            )
+
         retry_banner = ""
         if pending:
             rec = html_lib.escape(pending.get("receiver") or "the recipient")

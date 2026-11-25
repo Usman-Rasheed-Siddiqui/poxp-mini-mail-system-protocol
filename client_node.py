@@ -18,6 +18,7 @@ import threading
 from poxp_protocol import (
     build_poxp_message, build_ack, parse_poxp_message, get_iso_timestamp,
     STATUS_OK, STATUS_CLIENT_UNAVAILABLE, STATUS_RELAY_ERROR, STATUS_SERVER_UNAVAILABLE,
+    STATUS_REGISTERED, STATUS_CLIENT_NOT_FOUND,
     REGISTER_TIMEOUT, FETCH_TIMEOUT, SUBMIT_TIMEOUT
 )
 from storage_manager import StorageManager
@@ -43,6 +44,11 @@ class ClientNode:
         # the user retries before it returns) can never send two copies of
         # the same retry at once -- only one retry attempt is ever in flight.
         self.retry_busy = threading.Lock()
+
+        # Set when the server refuses REGISTER with 404 (this client is not
+        # listed in the server's DNS hosts file). While set, the client stays
+        # idle: no auto-fetch and no SUBMIT -- it just reports the refusal.
+        self.registration_refused = None
 
         # Start 5-second automatic fetch daemon
         self.fetch_thread = threading.Thread(target=self._auto_fetch_loop, daemon=True)
@@ -111,6 +117,11 @@ class ClientNode:
             return reply
         if reply:
             self.log(f"[ACK RECEIVED] {reply.get('method_or_code')} {reply.get('protocol_or_status')} from {reply.get('headers', {}).get('Error at', 'server')}")
+            if reply.get("method_or_code") == str(STATUS_CLIENT_NOT_FOUND[0]):
+                self.registration_refused = reply
+                self.log(f"[REGISTRATION REFUSED] {reply.get('body', '')} Client is idle (no fetch, no send).")
+            elif reply.get("method_or_code") == str(STATUS_REGISTERED[0]):
+                self.registration_refused = None
         return reply
 
     def _server_unavailable_ack(self, err):
@@ -132,6 +143,11 @@ class ClientNode:
 
     def send_email(self, receiver_email, subject, body, priority="moderate", attachment_filename=None, attachment_bytes=None):
         """Dispatches SUBMIT POXP/1.0 with email headers, body, and optional 10MB attachment."""
+        if self.registration_refused:
+            # Not admitted by the server's DNS: stay idle, send nothing, and hand
+            # back the server's own 404 refusal so the GUI can show it.
+            self.log("[SEND BLOCKED] This client's registration was refused (404 CLIENT_NOT_FOUND); nothing was sent.")
+            return self.registration_refused
         msg_id = str(uuid.uuid4())
         headers = {
             "Sender email": self.client_email,
@@ -234,6 +250,8 @@ class ClientNode:
 
     def fetch_inbox(self):
         """Queries FETCH POXP/1.0 and stores retrieved emails into client-side storage."""
+        if self.registration_refused:
+            return self.storage.client_get_inbox()  # idle: refused clients don't poll
         headers = {
             "Receiver email": self.client_email,
             "Identifier": str(uuid.uuid4()),
