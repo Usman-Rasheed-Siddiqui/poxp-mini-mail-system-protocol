@@ -24,7 +24,7 @@ from poxp_protocol import (
 from storage_manager import StorageManager
 
 class ClientNode:
-    def __init__(self, client_email, server_ip, server_port=5025, local_ip="127.0.0.1", subnet="255.255.255.0", gateway="192.168.1.1"):
+    def __init__(self, client_email, server_ip, server_port=5025, local_ip="127.0.0.1", subnet="255.255.255.0", gateway="192.168.137.1"):
         self.client_email = client_email
         self.server_ip = server_ip
         self.server_port = server_port
