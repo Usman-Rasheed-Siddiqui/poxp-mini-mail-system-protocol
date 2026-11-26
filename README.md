@@ -122,9 +122,18 @@ There is no project-local DNS file: a `hosts` file placed next to the code is **
 
 How the server reads each line (`<IP> <name> <name> ...`):
 - Blank lines and lines starting with `#` are ignored.
-- Any name containing `server_a` or `client_a` is recorded as living on **server_a**; **every other
-  name** is recorded as living on **server_b**.
-- Relays to a server always use **port 5025**, so both servers must listen on 5025.
+- The names `server_a` and `server_b` tell each server where the servers are. Relays to a server
+  always use **port 5025**, so both servers must listen on 5025.
+- Every other name is a client email, listed with **its own laptop's IP**. The hosts file says *who*
+  a client is, not which server it joins: any listed client can join either server.
+
+**How mail finds its recipient:** if the recipient is connected to the sender's server, it is
+delivered there. Otherwise that server relays it to the other server, which delivers it if the
+recipient is connected there, or holds it 10 s and reports **480** if not. "Connected" means the
+client is still polling (it fetched within the last 15 s), so a client that has closed stops
+counting even though it never said goodbye. In a one-server setup, leave the other server out of
+the hosts file; otherwise mail to an offline client would wait on the missing server and end in
+**502**.
 
 **Every client must be listed in the hosts file, with its own laptop's IP, before it joins.** The
 hosts file is trusted exactly as written; clients can never change it. A server:
@@ -270,7 +279,7 @@ Both clients are on server_a, so mail is delivered locally (no relay).
 | 201 | REGISTERED | Client registered with its server |
 | 400 | BAD_REQUEST | Malformed request / missing `POXP/1.0` token |
 | 404 | CLIENT_NOT_FOUND | Recipient not in the server's DNS (hosts file); or a client's email/IP doesn't match the hosts file (`REGISTER`, `FETCH`, `SUBMIT`); or it sent `FETCH`/`SUBMIT` without registering on that server |
-| 480 | CLIENT_UNAVAILABLE | Recipient didn't fetch within 10 s; the server deleted the mail |
+| 480 | CLIENT_UNAVAILABLE | Recipient isn't connected to either server; the server that held the mail 10 s deleted it (the GUI names that server) |
 | 500 | SERVER_ERROR | Unexpected error inside a server |
 | 502 | RELAY_ERROR | Destination server is down/unreachable (10 s retry window) |
 | 503 | SERVER_UNAVAILABLE | Raised by the client itself when its own server can't be reached or doesn't answer in time |
@@ -307,7 +316,7 @@ Starts two throw-away servers on **ports 5201 and 5202** (mailstores go in a tem
 the repo) and triggers, in order: 201, 404 (unlisted client's REGISTER refused), 404 (impostor
 using a listed email from the wrong IP), 404 (FETCH without REGISTER), 400 (missing
 header), 400 (no protocol token), 404 (unknown recipient),
-480 (same server), 480 (other server), 502 and 503. Takes about 35 seconds and exits by itself.
+480 (recipient not connected anywhere), 502 and 503. Takes about 30 seconds and exits by itself.
 No arguments, no other programs needed; ports 5201/5202 must be free.
 
 ---

@@ -37,6 +37,11 @@ SUBMIT_TIMEOUT = 180.0       # client -> own server, SUBMIT (waits while the ser
 SERVER_CONN_TIMEOUT = 180.0  # server <- any incoming connection
 RELAY_SOCKET_TIMEOUT = 120.0 # server -> remote server, RELAY
 
+# A registered client counts as "connected here" only while it keeps polling
+# (clients FETCH every 5s). After this long without a REGISTER/FETCH, the server
+# stops assuming the recipient is local and relays to the other server instead.
+CLIENT_ACTIVE_WINDOW = 15.0
+
 ATTACHMENT_START_TAG = "---POXP_ATTACHMENT_BEGIN---"
 ATTACHMENT_END_TAG = "---POXP_ATTACHMENT_END---"
 

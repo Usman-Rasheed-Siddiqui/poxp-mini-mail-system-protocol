@@ -28,7 +28,7 @@ from poxp_protocol import (
     STATUS_OK, STATUS_REGISTERED, STATUS_BAD_REQUEST,
     STATUS_CLIENT_NOT_FOUND, STATUS_CLIENT_UNAVAILABLE,
     STATUS_RELAY_ERROR, STATUS_SERVER_ERROR, get_iso_timestamp,
-    SERVER_CONN_TIMEOUT, RELAY_SOCKET_TIMEOUT
+    SERVER_CONN_TIMEOUT, RELAY_SOCKET_TIMEOUT, CLIENT_ACTIVE_WINDOW
 )
 from storage_manager import StorageManager
 
@@ -102,6 +102,24 @@ class ServerNode:
     def is_registered(self, email):
         with self.dns_lock:
             return email.lower() in self.registered
+
+    def is_active(self, email):
+        """Registered here AND still polling (REGISTER/FETCH within CLIENT_ACTIVE_WINDOW).
+        A client that closed never says so, so this is how a stale registration expires."""
+        with self.dns_lock:
+            session = self.registered.get(email.lower())
+        if not session:
+            return False
+        if session.get("fetching", 0) > 0:
+            return True
+        last = session.get("last_seen", session["registered_at"])
+        return time.time() - last <= CLIENT_ACTIVE_WINDOW
+
+    def other_servers(self):
+        """Server ids (other than this one) listed in the DNS hosts file."""
+        me = self.server_id.lower()
+        with self.dns_lock:
+            return sorted(k for k, v in self.dns_table.items() if v.get("server") == k and k != me)
 
     def _identity_error(self, email, addr):
         """Checks that `email` is listed in the DNS hosts file AND that this
@@ -240,7 +258,21 @@ class ServerNode:
                     print(att_info)
 
                 response_str = self.dispatch_request(parsed, addr)
-                conn.sendall(response_str.encode("utf-8"))
+                # A FETCH reply carrying big attachments can take a while on a slow
+                # link; the client counts as connected for that whole time, and
+                # its "last seen" moves to when the reply finished.
+                session = None
+                if method == "FETCH":
+                    with self.dns_lock:
+                        session = self.registered.get((headers.get("Receiver email") or "").lower())
+                    if session:
+                        session["fetching"] = session.get("fetching", 0) + 1
+                try:
+                    conn.sendall(response_str.encode("utf-8"))
+                finally:
+                    if session:
+                        session["fetching"] -= 1
+                        session["last_seen"] = time.time()
 
                 # Log the outgoing ACK
                 resp_parsed = parse_poxp_message(response_str)
@@ -337,9 +369,19 @@ class ServerNode:
             if not rec_info:
                 return build_ack(STATUS_CLIENT_NOT_FOUND[0], STATUS_CLIENT_NOT_FOUND[1], msg_id, self.server_id, f"Destination {recipient} not found in DNS")
 
-            # A recipient registered on this server is delivered here; otherwise
-            # the DNS hosts file decides which server it lives on.
-            dest_server = self.server_id if self.is_registered(recipient) else rec_info.get("server")
+            # Any client may join any server, and the hosts file only says WHO a
+            # client is (email + IP), not WHERE it joined. So: a recipient that is
+            # connected to this server is delivered here; otherwise the mail is
+            # relayed to the other server (which holds it for pickup, or reports
+            # 480 if the recipient isn't connected there either). With no other
+            # server in DNS (single-server setup) it is held here.
+            if self.is_active(recipient):
+                dest_server = self.server_id
+            else:
+                others = self.other_servers()
+                dest_server = others[0] if others else self.server_id
+                if others:
+                    print(f"[{self.server_id}] [ROUTING] '{recipient}' is not connected to {self.server_id}; relaying to {dest_server}.")
 
             # Local delivery on the same server
             if dest_server == self.server_id:

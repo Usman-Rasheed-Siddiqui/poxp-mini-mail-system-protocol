@@ -91,23 +91,20 @@ def main():
     banner("404 CLIENT_NOT_FOUND", "Alice mails someone who is in no server's DNS/hosts table.")
     result(alice.send_email("nobody@poxp.com", "hi", "hello"))
 
-    # Bob is known to both servers (as if from the hosts file / REGISTER) but never fetches mail.
-    srv_a.update_dns("bob@poxp.com", {"ip": "127.0.0.1", "server": "server_a"})
-    banner("480 CLIENT_UNAVAILABLE (same server)",
-           "Bob is known on Alice's server but is not running. Server holds the mail 10s, then deletes it.")
+    # Bob is listed in both servers' DNS (as if from the hosts files) but is not running.
+    for s in (srv_a, srv_b):
+        s.update_dns("bob@poxp.com", {"ip": "127.0.0.1", "server": "server_b"})
+    banner("480 CLIENT_UNAVAILABLE",
+           "Bob is listed but not connected to any server. Server A sees he isn't connected there and relays to B; "
+           "B holds the mail 10s, nobody fetches it, B deletes it and reports back via A.")
     result(alice.send_email("bob@poxp.com", "hi", "hello"))
     alice.cancel_last_failed()
 
     srv_a.update_dns("carol@poxp.com", {"ip": "127.0.0.1", "server": "server_b"})
-    srv_b.update_dns("carol@poxp.com", {"ip": "127.0.0.1", "server": "server_b"})
-    banner("480 CLIENT_UNAVAILABLE (other server)",
-           "Carol lives on server B, which is up, but Carol is not running. B holds 10s, deletes, reports back via A.")
-    result(alice.send_email("carol@poxp.com", "hi", "hello"))
-    alice.cancel_last_failed()
 
     srv_b.shutdown()
     time.sleep(0.5)
-    banner("502 RELAY_ERROR", "Carol's server (B) is DOWN, so server A cannot relay the mail.")
+    banner("502 RELAY_ERROR", "Carol is not connected to server A and the other server (B) is DOWN, so A cannot relay the mail.")
     result(alice.send_email("carol@poxp.com", "hi", "hello"))
     alice.cancel_last_failed()
 

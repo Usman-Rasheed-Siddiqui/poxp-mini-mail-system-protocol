@@ -506,7 +506,9 @@ def create_app(client_node: ClientNode):
             # Plain-language reason per status code. The raw technical error
             # (socket exception text, etc.) stays in the Socket Console log.
             if code == "480":
-                reason_text = f"{code} — {rec} did not pick up the email within 10 seconds, so the server deleted it. The recipient appears to be offline."
+                where = html_lib.escape(pending.get("error_at") or "the server")
+                reason_text = (f"{code} — {rec} is not connected to any server: {where} held the email for 10 seconds, "
+                               "nobody picked it up, so it was deleted.")
             elif code == "502" and "unknown in DNS" in (pending.get("error_msg") or ""):
                 reason_text = f"{code} — Your server does not know which server hosts {rec}, so it could not relay the email."
             elif code == "502":
